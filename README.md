@@ -1,8 +1,7 @@
 # cancer-risk-biome
 
 Germline + EHR **colorectal cancer risk prediction** in the **BioMe** biobank
-(Cohorts I + II, Regeneron & Sema4 WXS). A config-driven pipeline that replicates
-and extends [`mohibul-07/colorectal-cancer-risk-prediction`](https://github.com/mohibul-07/colorectal-cancer-risk-prediction),
+(Cohorts I + II, Regeneron & Sema4 WXS). 
 plus a Streamlit web app for interactive risk estimation.
 
 > ⚠️ **PHI notice.** BioMe EHR + variant data are IRB-restricted and live only on
