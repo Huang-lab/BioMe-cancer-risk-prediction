@@ -72,7 +72,11 @@ stays an open question (tracked in `PLAN.md`). Do not silently resolve a
 
 ## Status note
 
-As of the initial scaffold, `schema/` contains **only this project's
-placeholder README** — the headers and `BRSPD_Data_Dictionary_v4.csv` were not
-part of the upload. Consequently **no `RECONCILE:` column has been confirmed**;
-all are open questions in `PLAN.md`.
+`schema/` now holds the **real clinical-file headers** (`*.header`, column names
+only) Rita provided, so most `RECONCILE:` column names in the configs are
+resolved. Still open (kept as `RECONCILE:` and tracked in `PLAN.md`): the
+**roster columns** (incl. the sample_id↔ehr_id crosswalk), the **Cohort II
+clinical directory**, `BRSPD_Data_Dictionary_v4.csv` (value codings/units), and
+a few categorical value strings. The pipeline runs end-to-end on synthetic data
+(`scripts/run.py --with-synthetic`); on Minerva, confirm the remaining
+`RECONCILE:` names, then run for real.

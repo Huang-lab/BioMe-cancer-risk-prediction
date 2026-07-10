@@ -1,38 +1,37 @@
 # schema/ — column headers + data dictionary (the ONLY thing we build against here)
 
 This directory is the contract between the code in this repo and the real EHR /
-variant data that lives on Minerva. It holds **structure only** — column names,
-types, and definitions — never any patient rows.
+variant data on Minerva. It holds **structure only** — column names — never any
+patient rows.
 
-## Expected contents (SOURCE OF TRUTH for column names)
+## Contents
 
-| File                          | What it is                                                        | Status |
-|-------------------------------|------------------------------------------------------------------|--------|
-| `BRSPD_Data_Dictionary_v4.csv`| Master data dictionary: every EHR column, type, description       | ⛔ NOT YET UPLOADED |
-| `Demographics.header`         | Header row of `Demographics.txt`                                  | ⛔ NOT YET UPLOADED |
-| `Problem_List.header`         | Header row of `Problem_List.txt`                                  | ⛔ NOT YET UPLOADED |
-| `Encounter_Diagnosis.header`  | Header row of `Encounter_Diagnosis.txt`                           | ⛔ NOT YET UPLOADED |
-| `Vitals.header`               | Header row of `Vitals.txt`                                        | ⛔ NOT YET UPLOADED |
-| `Order_results.header`        | Header row of `Order_results.txt`                                 | ⛔ NOT YET UPLOADED |
-| `Social_History.header`       | Header row of `Social_History.txt`                               | ⛔ NOT YET UPLOADED |
-| `Family_History.header`       | Header row of `Family_History.txt`                               | ⛔ NOT YET UPLOADED |
-| `Medical_History.header`      | Header row of `Medical_History.txt`                              | ⛔ NOT YET UPLOADED |
-| `Surgical_History.header`     | Header row of `Surgical_History.txt`                             | ⛔ NOT YET UPLOADED |
-| `Medications.header`          | Header row of `Medications.txt`                                  | ⛔ NOT YET UPLOADED |
-| `OB_HISTORY.header`           | Header row of `OB_HISTORY.txt` (breast only)                     | ⛔ NOT YET UPLOADED |
+`*.header` files: the real BioMe clinical-file headers (pipe-delimited), column
+names only. Structure is identical across Regeneron (Cohort I) and Sema4
+(Cohort II); the `Sema4_` filename prefix is dropped here. The pipeline resolves
+every column it reads from `config/*.yaml`, which was populated from these
+headers. `make_synthetic.py` generates fake tables matching these columns so the
+pipeline runs end-to-end locally with no PHI.
 
-> **These files were not part of the initial upload.** Only `crc.yaml` and
-> `breast.yaml` were provided. Until the headers + data dictionary land here,
-> **no `RECONCILE:` column can be confirmed** — see the open-questions section
-> of `PLAN.md`, where all of them are listed as blocked.
+Key structural facts baked into the config:
+- **Pipe-delimited** clinical files; patient key column `sem_id`.
+- **Vitals** and **Order_results** are **long format** (one row per
+  measurement: `vital_sign_description`/`component_name` + value + date).
+- **No DOB** in Demographics — age is derived from `Questionnaire.YEAR_OF_BIRTH`.
+- `Questionnaire` carries rich self-report flags (`FAM_HX_COLON_CANCER`,
+  `PERS_HX_*`, `EDUCATION_HIGHEST_GRADE`, `SMOKED_GT_100_CIGARETTES_EVER`).
 
-## How a header file is captured on Minerva (no data leaves)
+## Still needed on Minerva (tracked as RECONCILE in the configs / PLAN.md)
+
+| Item | Status |
+|------|--------|
+| `BRSPD_Data_Dictionary_v4.csv` (value codings, units) | ⛔ not in container |
+| Roster header — `RegenWXS_HX_Newgroups.tsv` columns (ehr_id, **sample_id crosswalk**, group labels, `Newgroups`, PCs) | ⛔ not provided; `roster:` keys are RECONCILE |
+| Cohort II clinical directory path | ⛔ RECONCILE (`src/Sema4` placeholder) |
+| Exact `component_name` / `vital_sign_description` value strings | best-guess maps in `feature_maps` — confirm against data |
+
+## How a header is captured on Minerva (no data leaves)
 
 ```bash
-# ONLY the first line — the column names, zero patient rows:
-head -n 1 Demographics.txt > Demographics.header
+head -n 1 Demographics.txt > Demographics.header   # column names only, zero rows
 ```
-
-Header files contain column names only. Confirm each one is row-free before it
-enters this repo. The data dictionary describes columns, not patients, so it is
-also safe to commit.

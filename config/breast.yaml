@@ -1,64 +1,145 @@
 # =====================================================================
-# breast.yaml — Breast cancer risk model config (BioMe Cohort I, Regeneron WXS)
-# Same key structure as crc.yaml so the shared scripts read either.
-# Differences from CRC: phenotype codes, gene panel, and reproductive
-# features from OB_HISTORY (which the CRC-only source repo never had).
-# Column names tagged RECONCILE: confirm against BRSPD_Data_Dictionary_v4.csv.
+# breast.yaml — Breast cancer risk model config (BioMe, WXS Cohorts I + II)
+#
+# *** PARKED STUB (this phase = CRC only, decision D1). ***
+# Exact key-structure parity with crc.yaml so the SAME shared scripts read
+# either. Column names resolved from the real headers where shared; breast-only
+# reproductive columns (menarche/first-birth) are not in OB_HISTORY -> RECONCILE.
+# Not built or tested this phase.
 # =====================================================================
 
 cancer: breast
 label: "Breast cancer"
+random_state: 42
 
 paths:
   workdir:   /sc/arion/projects/rg_huangk06/variants_PLP_BioMe/Cancer_risk_prediction
-  roster:    Regeneron/metadata/RegenWXS_HX_Newgroups.250109.tsv
-  ehr_dir:   .
   data_dict: BRSPD_Data_Dictionary_v4.csv
-  carrier_flags: genomic/breast_clinvar_PLP_carriers.tsv
   outdir:    results/breast
 
+cohorts:
+  - name: cohortI
+    platform: regeneron_wxs
+    roster:          Regeneron/metadata/RegenWXS_HX_Newgroups.250109.tsv
+    ehr_dir:         src/Regen
+    clinical_id_col: sem_id
+    carrier_flags:   Biome-alphamissense-calibration/results/cohortI/all_carriers.tsv
+  - name: cohortII
+    platform: sema4_wxs
+    roster:          metadata/Sema4WXS_HX_Newgroups.250109.tsv
+    ehr_dir:         RECONCILE:src/Sema4
+    clinical_id_col: sem_id
+    carrier_flags:   Biome-alphamissense-calibration/results/cohortII/all_carriers.tsv
+
+cohort_strategy:
+  pooled:       true
+  cross_cohort: true
+
+roster:
+  sep: "\t"
+  ehr_id_col:         RECONCILE:sem_id
+  sample_id_col:      RECONCILE:sample_id
+  group_col:          RECONCILE:group
+  case_labels:        [RECONCILE:BREAST]
+  control_label:      control
+  drop_other_groups:  true
+  ancestry_group_col: RECONCILE:Newgroups
+  pc_cols:            RECONCILE:[PC1, PC2, PC3, PC4]
+
 ehr_tables:
-  demographics:   Demographics.txt
-  problem_list:   Problem_List.txt
-  enc_diagnosis:  Encounter_Diagnosis.txt
-  vitals:         Vitals.txt
-  labs:           Order_results.txt
-  social:         Social_History.txt
-  family:         Family_History.txt
-  medical_hx:     Medical_History.txt
-  surgical_hx:    Surgical_History.txt
-  meds:           Medications.txt
-  ob_hx:          OB_HISTORY.txt          # breast only — reproductive history
+  demographics:
+    file: Demographics.txt
+    sep: "|"
+    id_col: sem_id
+    cols: {sex: gender, race: self_reported_race, ethnicity: ethnic_group_c,
+           marital_status: marital_status, religion: religion, country: country}
+  problem_list:
+    file: Problem_List.txt
+    sep: "|"
+    id_col: sem_id
+    cols: {icd_code: icd9_code, code_type: code_type, text: description, date: noted_date}
+  enc_diagnosis:
+    file: Encounter_Diagnosis.txt
+    sep: "|"
+    id_col: sem_id
+    cols: {icd_code: dx_code1, code_type: dx_code_type, text: dx_name, date: contact_date}
+  vitals:
+    file: Vitals.txt
+    sep: "|"
+    id_col: sem_id
+    long: true
+    cols: {name: vital_sign_description, value: vital_sign_measurement, date: date_of_assessment}
+  labs:
+    file: Order_results.txt
+    sep: "|"
+    id_col: sem_id
+    long: true
+    cols: {analyte: component_name, value: ord_num_value, date: result_date,
+           units: reference_unit, flag: result_flag_c}
+  social:
+    file: Social_History.txt
+    sep: "|"
+    id_col: sem_id
+    cols: {smoking: TOBACCO_USER, alcohol: IS_ALCOHOL_USER, years_education: YEARS_EDUCATION, date: ENTRY_DATE}
+  family:
+    file: Family_History.txt
+    sep: "|"
+    id_col: sem_id
+    cols: {relation: relation_c, condition: problem_description, date: entry_date}
+  medical_hx:
+    file: Medical_History.txt
+    sep: "|"
+    id_col: sem_id
+    cols: {icd_code: ICD9_CODE, code_type: CODE_TYPE, text: MEDICAL_HX_DESCRIPTION, date: MEDICAL_HX_DATE}
+  surgical_hx:
+    file: Surgical_History.txt
+    sep: "|"
+    id_col: sem_id
+    cols: {procedure: procedure_name, text: surgical_hx_description, date: surgical_hx_date}
+  meds:
+    file: Medications.txt
+    sep: "|"
+    id_col: sem_id
+    cols: {name: DESCRIPTION, date: ordering_date}
+  ob_hx:                                       # breast only (real header is minimal)
+    file: OB_HISTORY.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      outcome:      ob_hx_outcome_c            # parity derived from outcome rows
+      outcome_date: ob_hx_outcome_dt
+      age_at_menarche:    RECONCILE:age_menarche      # not in OB_HISTORY — source TBD
+      age_at_first_birth: RECONCILE:age_first_birth   # not in OB_HISTORY — source TBD
+  questionnaire:
+    file: Questionnaire.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      year_of_birth:        YEAR_OF_BIRTH
+      country_of_birth:     COUNTRY_OF_BIRTH
+      language_preference:  LANGUAGE_PREFERENCE
+      education_grade:      EDUCATION_HIGHEST_GRADE
+      fam_hx_breast_cancer: FAM_HX_BREAST_CANCER
+      pers_hx_obesity:      PERS_HX_OBESITY
 
 phenotype:
-  case_icd10_prefix: ["C50"]              # malignant neoplasm of breast
-  case_icd9_prefix:  ["174", "175"]       # female / male breast
-  dx_date_col: RECONCILE:diagnosis_date
-  icd_col:     RECONCILE:icd_code
-  patient_id_col: RECONCILE:masked_mrn
-  index_date: earliest_qualifying_dx
-  # NOTE: decide whether to restrict to female or model sex as covariate.
-  # Default keeps both and includes sex; C50 in males is rare but real.
-  restrict_sex: null                      # null = keep all; "F" to restrict
+  case_icd10_prefix: ["C50"]
+  case_icd9_prefix:  ["174", "175"]
+  restrict_sex: null
+  age_source: questionnaire_year_of_birth
+  index_date:
+    case:    earliest_qualifying_dx
+    control: last_encounter
 
 controls:
-  definition: any_cancer_free             # switch to target_cancer_free to compare
-  cancer_icd10_prefix: ["C"]
-  cancer_icd9_prefix:  ["140","141","142","143","144","145","146","147","148",
-                        "149","150","151","152","153","154","155","156","157",
-                        "158","159","160","161","162","163","164","165","170",
-                        "171","172","174","175","176","179","180","181","182",
-                        "183","184","185","186","187","188","189","190","191",
-                        "192","193","194","195","196","197","198","199","200",
-                        "201","202","203","204","205","206","207","208","209"]
+  source: roster_group
 
 matching:
-  method: risk_set
+  method: propensity
+  ps_covariates: [age_at_index, sex, genetic_pcs, cohort]
   k_controls: 4
-  match_vars: [age_at_index, sex, ancestry_pcs, followup_len]
-  ancestry: pcs_if_available
-  n_pcs: 4
   caliper_sd: 0.2
+  replace: false
   also_emit_unmatched: true
 
 temporal_window:
@@ -68,48 +149,104 @@ temporal_window:
   log_dropped_post_index: true
 
 genomics:
+  carrier_file:
+    sep: "\t"
+    sample_id_col: sample_id
+    gene_col: gene
+    evidence_cols: {acmg: in_ACMG, alphamissense: in_AM, clinvar: in_ClinVar}
+    positive_value: "yes"
+  carrier_evidence: any_of
+  evidence_sources: [clinvar, alphamissense]
   panel: [BRCA1, BRCA2, PALB2, ATM, CHEK2, TP53, PTEN, CDH1, STK11,
           BARD1, RAD51C, RAD51D]
-  aggregate_flag: hboc_any                # hereditary breast/ovarian aggregate
+  aggregate_flag: hboc_any
   extra_aggregate: breast_panel_any
+  aggregate_members:
+    hboc_any:         [BRCA1, BRCA2, PALB2]
+    breast_panel_any: [BRCA1, BRCA2, PALB2, ATM, CHEK2, TP53, PTEN, CDH1, STK11,
+                       BARD1, RAD51C, RAD51D]
 
 features:
   shared:
     - age_at_index
     - sex
-    - ancestry_pcs
+    - race
+    - ethnicity
+    - genetic_pcs
+    - cohort
     - bmi
     - smoking_status
     - alcohol_use
-    - family_hx_breast                    # Family_History
+    - family_hx_breast
     - charlson_index
+  socioeconomic:
+    - years_education
+    - marital_status
+    - religion
+    - language_preference
+    - country_of_birth
   breast_specific:
-    reproductive:                         # OB_HISTORY — strongest signal the repo lacked
+    reproductive:
       - parity
       - age_at_menarche
       - age_at_first_birth
-    hormonal:                             # Medications
-      - hrt_exposure
-      - oral_contraceptive
-    procedures:                           # Surgical_History / Medical_History
-      - prior_breast_biopsy
-      - benign_breast_disease
-    trajectory:                           # 軌跡特徵 — beyond source repo
+    trajectory:
       - bmi_slope
       - weight_change_velocity
+  audit_only: []
+
+feature_maps:
+  vital_signs:
+    bmi:    ["BMI", "Body Mass Index"]
+    height: ["Height"]
+    weight: ["Weight"]
+    sbp:    ["BP Systolic", "Systolic Blood Pressure", "Systolic"]
+    dbp:    ["BP Diastolic", "Diastolic Blood Pressure", "Diastolic"]
+  lab_analytes:
+    wbc:        ["WBC", "White Blood Cell Count"]
+    hemoglobin: ["Hemoglobin", "HGB"]
+    creatinine: ["Creatinine"]
+  medications:
+    hrt_exposure:      ["estrogen", "estradiol", "conjugated estrogens", "hormone replacement"]
+    oral_contraceptive: ["ethinyl estradiol", "norethindrone", "oral contraceptive"]
+  comorbidity_icd:
+    obesity: ["E66", "278"]
+  symptom_icd: {}
+  procedures:
+    prior_breast_biopsy: ["breast biopsy"]
+  family_history:
+    questionnaire_flag: fam_hx_breast_cancer
+    positive_values: ["yes", "y", "1", "true"]
+    crc_terms: ["breast cancer"]
+
+thresholds:
+  obese_bmi: 30
+  hypertension_sbp: 140
+  hypertension_dbp: 90
+  platelet_high: 400
+  platelet_low: 150
+  creatinine_high: 1.3
 
 model:
-  candidates: [xgboost, random_forest, logistic_l2]
-  imbalance: scale_pos_weight             # NOT SMOTE
+  candidates: [logistic_l2, random_forest, xgboost]
+  primary_population: matched
+  imbalance:
+    matched: none
+    full: class_weight
   cv_folds: 5
-  cv_stratified: true
+  cv: stratified_group
   search: randomized
   search_iters: 20
-  threshold_tuning: recall
-  random_state: 42
+  threshold_tuning:
+    objective: recall
+    min_precision: 0.10
+  select_metric: pr_auc
 
 evaluation:
-  metrics: [auc, pr_auc, calibration]
+  metrics: [auc, pr_auc, calibration, brier]
   stratify_by: ancestry_group
+  calibration_bins: 10
+  cross_cohort: true
   shap: treeexplainer
+  shap_top_k: 15
   carrier_enrichment: true

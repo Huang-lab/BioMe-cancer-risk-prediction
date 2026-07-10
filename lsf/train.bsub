@@ -1,0 +1,31 @@
+#!/bin/bash
+# =====================================================================
+# LSF submit script — model training + evaluation only (assumes the data
+# stages already ran and dataset_*.csv exist under paths.outdir).
+#   bsub < lsf/train.bsub
+# Heavier CPU/mem for the RandomizedSearchCV sweep; tune to your account.
+# =====================================================================
+#BSUB -J crc_train
+#BSUB -P acc_rg_huangk06
+#BSUB -q premium
+#BSUB -n 16
+#BSUB -R "rusage[mem=12000]"
+#BSUB -W 8:00
+#BSUB -o logs/crc_train.%J.out
+#BSUB -e logs/crc_train.%J.err
+
+set -euo pipefail
+
+CONFIG=${CONFIG:-config/crc.yaml}
+
+module purge
+module load anaconda3
+source activate cancer-risk-biome
+
+cd "$LS_SUBCWD"
+mkdir -p logs
+
+python scripts/train.py --config "$CONFIG" --population both
+python scripts/evaluate.py --config "$CONFIG"
+
+echo "Training + evaluation done."

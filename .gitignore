@@ -31,15 +31,17 @@ results/breast/*
 !results/crc/.gitkeep
 !results/breast/.gitkeep
 
-# --- explicit allow-list: schema is column names / definitions, NOT PHI ---
+# --- explicit allow-list: NOT PHI (schema is column names; specs are config) ---
 !schema/*.header
 !schema/BRSPD_Data_Dictionary_v4.csv
+!**/requirements.txt
+!web/requirements.txt
+!env/environment.yml
 
 # Python / env cruft
 __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
 .venv/
-env/*
-!env/.gitkeep
+venv/
 .DS_Store

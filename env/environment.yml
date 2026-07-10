@@ -1,0 +1,24 @@
+# Conda environment for the BioMe cancer-risk pipeline (Minerva).
+#   module load anaconda3
+#   conda env create -f env/environment.yml
+#   conda activate cancer-risk-biome
+#
+# Versions pinned to match the web-serving stack so a model trained here loads
+# cleanly in web/ (see web/requirements.txt). Bump deliberately, together.
+name: cancer-risk-biome
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy=1.26.2
+  - pandas=2.1.4
+  - scikit-learn=1.3.2
+  - scipy=1.11.4
+  - matplotlib=3.8.2
+  - pyyaml=6.0.1
+  - joblib=1.3.2
+  - pip:
+      - xgboost==2.0.3
+      - shap==0.44.0
+      - streamlit==1.39.0

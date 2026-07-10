@@ -1,148 +1,356 @@
 # =====================================================================
-# crc.yaml — Colorectal cancer risk model config (BioMe Cohort I, Regeneron WXS)
+# crc.yaml — Colorectal cancer risk model config (BioMe, WXS Cohorts I + II)
 # Single source of truth. The shared scripts read either crc.yaml or breast.yaml.
-# Any column name tagged RECONCILE must be confirmed against
-# BRSPD_Data_Dictionary_v4.csv + the *.header files before running on Minerva.
+#
+# Column names below are resolved from the real clinical-file headers Rita
+# provided (pipe-delimited; identical structure across Regeneron & Sema4).
+# RECONCILE: <name> marks the FEW names still unconfirmed (roster columns, some
+# categorical value strings) — confirm on Minerva before the real run.
+#
+# Design (approved plan):
+#   - Roster is the SPINE: patient IDs + case(CRC)/control labels + ancestry.
+#   - Controls = roster group == control (clean; no family history of cancer).
+#   - Propensity-score matching (NOT SMOTE) is the primary design.
+#   - Two cohorts (Regeneron WXS, Sema4 WXS): pooled model + cross-cohort validation.
+#   - Temporal-leakage window: features only from [index-730d, index-182d].
+#   - Carriers = AlphaMissense-calibrated all_carriers.tsv (per cohort).
 # =====================================================================
 
-cancer: crc                       # used to name outputs: results/crc/
+cancer: crc
 label: "Colorectal cancer"
+random_state: 42
 
-# ---------------------------------------------------------------------
-# Paths (Minerva). Keep every path here, nowhere else in the code.
-# ---------------------------------------------------------------------
 paths:
   workdir:   /sc/arion/projects/rg_huangk06/variants_PLP_BioMe/Cancer_risk_prediction
-  roster:    Regeneron/metadata/RegenWXS_HX_Newgroups.250109.tsv   # ALL patients
-  ehr_dir:   .                    # dir holding the *.txt EHR extracts
   data_dict: BRSPD_Data_Dictionary_v4.csv
-  carrier_flags: genomic/crc_clinvar_PLP_carriers.tsv   # I generate this separately
   outdir:    results/crc
 
-# EHR tables this model reads (skip the rest). Filenames as delivered.
-ehr_tables:
-  demographics:   Demographics.txt
-  problem_list:   Problem_List.txt
-  enc_diagnosis:  Encounter_Diagnosis.txt
-  vitals:         Vitals.txt
-  labs:           Order_results.txt
-  social:         Social_History.txt
-  family:         Family_History.txt
-  medical_hx:     Medical_History.txt
-  surgical_hx:    Surgical_History.txt
-  meds:           Medications.txt
+# ---------------------------------------------------------------------
+# Cohorts. Same key structure per cohort so one loader reads either.
+# Clinical files are pipe-delimited with a `sem_id` patient key. If Regeneron's
+# key column differs, set clinical_id_col per cohort (it overrides the table id).
+# ---------------------------------------------------------------------
+cohorts:
+  - name: cohortI
+    platform: regeneron_wxs
+    roster:          Regeneron/metadata/RegenWXS_HX_Newgroups.250109.tsv
+    ehr_dir:         src/Regen
+    clinical_id_col: sem_id
+    carrier_flags:   Biome-alphamissense-calibration/results/cohortI/all_carriers.tsv
+  - name: cohortII
+    platform: sema4_wxs
+    roster:          metadata/Sema4WXS_HX_Newgroups.250109.tsv
+    ehr_dir:         RECONCILE:src/Sema4      # TBD — confirm the Cohort II clinical dir
+    clinical_id_col: sem_id
+    carrier_flags:   Biome-alphamissense-calibration/results/cohortII/all_carriers.tsv
+
+cohort_strategy:
+  pooled:       true
+  cross_cohort: true
 
 # ---------------------------------------------------------------------
-# Phenotype 表型定義 — who is a case
+# Roster (the spine). Join keys, labels, ancestry. The roster must ALSO carry
+# the sequencing<->EHR crosswalk: carriers use SINAI_* sample ids, while the
+# clinical files key on sem_id. ehr_id_col must hold the same ids as sem_id.
+# Roster header not yet provided -> these names are RECONCILE.
+# ---------------------------------------------------------------------
+roster:
+  sep: "\t"
+  ehr_id_col:         RECONCILE:sem_id       # must match clinical sem_id values
+  sample_id_col:      RECONCILE:sample_id    # SINAI_* — join key to the carrier file
+  group_col:          RECONCILE:group
+  case_labels:        [RECONCILE:CRC]        # exact roster value(s) meaning "CRC case"
+  control_label:      control
+  drop_other_groups:  true
+  ancestry_group_col: RECONCILE:Newgroups    # genetically-inferred ancestry strata
+  pc_cols:            RECONCILE:[PC1, PC2, PC3, PC4]
+
+# ---------------------------------------------------------------------
+# RAW clinical files (headers resolved). `long: true` = one row per
+# (patient, item, date) — the value/item live in columns, not one col per item.
+# ---------------------------------------------------------------------
+ehr_tables:
+  demographics:
+    file: Demographics.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      sex:            gender
+      race:           self_reported_race
+      ethnicity:      ethnic_group_c
+      marital_status: marital_status
+      religion:       religion
+      country:        country
+  problem_list:
+    file: Problem_List.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      icd_code:  icd9_code
+      code_type: code_type
+      text:      description
+      date:      noted_date
+  enc_diagnosis:
+    file: Encounter_Diagnosis.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      icd_code:  dx_code1
+      code_type: dx_code_type
+      text:      dx_name
+      date:      contact_date       # authoritative dx date -> index_date for cases
+  vitals:                            # LONG format
+    file: Vitals.txt
+    sep: "|"
+    id_col: sem_id
+    long: true
+    cols:
+      name:  vital_sign_description
+      value: vital_sign_measurement
+      date:  date_of_assessment
+  labs:                              # LONG format
+    file: Order_results.txt
+    sep: "|"
+    id_col: sem_id
+    long: true
+    cols:
+      analyte: component_name
+      value:   ord_num_value
+      date:    result_date
+      units:   reference_unit
+      flag:    result_flag_c
+  social:
+    file: Social_History.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      smoking:         TOBACCO_USER
+      alcohol:         IS_ALCOHOL_USER
+      years_education: YEARS_EDUCATION
+      date:            ENTRY_DATE
+  family:
+    file: Family_History.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      relation:  relation_c
+      condition: problem_description
+      date:      entry_date
+  medical_hx:
+    file: Medical_History.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      icd_code:  ICD9_CODE
+      code_type: CODE_TYPE
+      text:      MEDICAL_HX_DESCRIPTION
+      date:      MEDICAL_HX_DATE
+  surgical_hx:
+    file: Surgical_History.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      procedure: procedure_name
+      text:      surgical_hx_description
+      date:      surgical_hx_date
+  meds:
+    file: Medications.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      name: DESCRIPTION
+      date: ordering_date
+  health_maintenance:                # HISTORY has the screening done-date per topic
+    file: HEALTH_MAINTENANCE_HISTORY.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      topic: hm_topic_name
+      date:  entry_date
+      type:  hm_type
+    colonoscopy_topics: ["Colorectal Cancer Screening", "Colonoscopy"]
+  questionnaire:                      # rich self-report survey (like AoU)
+    file: Questionnaire.txt
+    sep: "|"
+    id_col: sem_id
+    cols:
+      year_of_birth:       YEAR_OF_BIRTH        # -> age_at_index (no DOB in Demographics)
+      country_of_birth:    COUNTRY_OF_BIRTH
+      language_preference: LANGUAGE_PREFERENCE
+      education_grade:     EDUCATION_HIGHEST_GRADE
+      fam_hx_colon_cancer: FAM_HX_COLON_CANCER
+      pers_hx_ibd:         PERS_HX_INFLAMMATORY_BOWEL
+      pers_hx_diabetes:    PERS_HX_DIABETES
+      pers_hx_obesity:     PERS_HX_OBESITY
+      pers_hx_htn:         PERS_HX_HIGH_BLOOD_PRESSURE
+      smoked_100:          SMOKED_GT_100_CIGARETTES_EVER
+
+# ---------------------------------------------------------------------
+# Phenotype — cases from the roster group, cross-checked / dated by ICD.
 # ---------------------------------------------------------------------
 phenotype:
-  case_icd10_prefix: ["C18", "C19", "C20"]        # colon, rectosigmoid, rectum
+  case_icd10_prefix: ["C18", "C19", "C20"]     # colon, rectosigmoid, rectum
   case_icd9_prefix:  ["153", "154"]
-  dx_date_col: RECONCILE:diagnosis_date            # in enc_diagnosis / problem_list
-  icd_col:     RECONCILE:icd_code
-  patient_id_col: RECONCILE:masked_mrn             # join key across ALL tables + roster
-  # index_date = earliest qualifying dx date per case
-  index_date: earliest_qualifying_dx
+  age_source: questionnaire_year_of_birth      # age = index_year - YEAR_OF_BIRTH
+  index_date:
+    case:    earliest_qualifying_dx
+    control: last_encounter                     # J4: controls use last encounter date
 
-# ---------------------------------------------------------------------
-# Controls 對照組
-# ---------------------------------------------------------------------
 controls:
-  # any_cancer_free = free of ALL cancers (cleaner, smaller, slightly healthier)
-  # target_cancer_free = only free of CRC (larger, other cancers allowed)
-  definition: any_cancer_free       # switch to target_cancer_free to compare
-  # any-cancer detection for exclusion: broad malignancy net
-  cancer_icd10_prefix: ["C"]
-  cancer_icd9_prefix:  ["140","141","142","143","144","145","146","147","148",
-                        "149","150","151","152","153","154","155","156","157",
-                        "158","159","160","161","162","163","164","165","170",
-                        "171","172","174","175","176","179","180","181","182",
-                        "183","184","185","186","187","188","189","190","191",
-                        "192","193","194","195","196","197","198","199","200",
-                        "201","202","203","204","205","206","207","208","209"]
+  source: roster_group
 
-# ---------------------------------------------------------------------
-# Matching 風險集抽樣 — risk-set sampling
-# ---------------------------------------------------------------------
 matching:
-  method: risk_set                  # control must be cancer-free & observed at case index_date
-  k_controls: 4                     # controls per case
-  match_vars: [age_at_index, sex, ancestry_pcs, followup_len]
-  ancestry: pcs_if_available        # WXS PCs; fall back to self-reported race/ethnicity
-  n_pcs: 4
-  caliper_sd: 0.2                   # nearest-neighbour caliper on matched distance
-  also_emit_unmatched: true         # full-cohort dataset w/ class weights, for comparison
+  method: propensity
+  ps_covariates: [age_at_index, sex, genetic_pcs, cohort]
+  k_controls: 4
+  caliper_sd: 0.2
+  replace: false
+  also_emit_unmatched: true
 
-# ---------------------------------------------------------------------
-# Temporal window 時間窗 — leakage control (the key lesson from the source repo)
-# ---------------------------------------------------------------------
 temporal_window:
-  # features drawn ONLY from [index_date - max, index_date - min]
-  min_lead_days: 182                # 6 months
-  max_lookback_days: 730            # 2 years
+  min_lead_days: 182
+  max_lookback_days: 730
   drop_on_or_after_index: true
-  log_dropped_post_index: true      # expect this count to be large; report it
+  log_dropped_post_index: true
 
-# ---------------------------------------------------------------------
-# ClinVar P/LP germline panel 帶因者狀態
-# ---------------------------------------------------------------------
 genomics:
+  carrier_file:
+    sep: "\t"
+    sample_id_col: sample_id
+    gene_col: gene
+    evidence_cols: {acmg: in_ACMG, alphamissense: in_AM, clinvar: in_ClinVar}
+    positive_value: "yes"
+  carrier_evidence: any_of
+  evidence_sources: [clinvar, alphamissense]   # strict alternative: [acmg]
   panel: [MLH1, MSH2, MSH6, PMS2, EPCAM, APC, MUTYH, SMAD4, STK11,
           BMPR1A, PTEN, POLE, POLD1, NTHL1]
-  aggregate_flag: lynch_any         # plus one-hot per gene
-  extra_aggregate: crc_panel_any    # any P/LP across the whole panel
+  aggregate_flag: lynch_any
+  extra_aggregate: crc_panel_any
+  aggregate_members:
+    lynch_any:     [MLH1, MSH2, MSH6, PMS2, EPCAM]
+    crc_panel_any: [MLH1, MSH2, MSH6, PMS2, EPCAM, APC, MUTYH, SMAD4, STK11,
+                    BMPR1A, PTEN, POLE, POLD1, NTHL1]
 
-# ---------------------------------------------------------------------
-# Features 特徵
-# ---------------------------------------------------------------------
 features:
   shared:
     - age_at_index
     - sex
-    - ancestry_pcs
-    - bmi                           # Vitals; last value in window
-    - smoking_status                # Social_History
-    - alcohol_use                   # Social_History
-    - family_hx_crc                 # Family_History
-    - charlson_index                # from Problem_List comorbidities
+    - race
+    - ethnicity
+    - genetic_pcs
+    - cohort
+    - bmi
+    - smoking_status
+    - alcohol_use
+    - family_hx_crc
+    - charlson_index
+  socioeconomic:
+    - years_education
+    - marital_status
+    - religion
+    - language_preference
+    - country_of_birth
   crc_specific:
-    labs:                           # Order_results; last value + mean-in-window
-      - WBC
-      - hemoglobin                  # anemia signal
-      - CEA                         # if present
-    trajectory:                     # 軌跡特徵 — go beyond source repo
-      - bmi_slope                   # rate of BMI change across window
+    labs:
+      - wbc
+      - hemoglobin
+      - platelet_count
+      - creatinine
+      - alt
+      - ast
+    engineered_flags:
+      - obese
+      - hypertension
+      - high_platelets
+      - low_platelets
+      - high_creatinine
+    symptoms:
+      - rectal_bleeding
+      - bowel_changes
+      - abdominal_pain
+    trajectory:
+      - bmi_slope
       - weight_loss_velocity
       - hemoglobin_slope
-    procedures:                     # Surgical_History / Medical_History
+    procedures:
       - prior_colonoscopy
       - prior_polypectomy
-    comorbidities:                  # Problem_List flags
+    comorbidities:
       - ibd
       - diabetes
-      - obesity
-    medications:                    # Medications; protective/risk exposures
+    medications:
       - aspirin
       - nsaid
+  audit_only:
+    - cea                             # J3: pre-index CEA is leakage/indication bias
 
 # ---------------------------------------------------------------------
-# Modeling 建模
+# Feature maps — how raw values map to feature keys. Column names are known;
+# some VALUE strings (lab component_name, vital descriptions) are best-guesses
+# to confirm against the data. features.py matches case-insensitively.
 # ---------------------------------------------------------------------
+feature_maps:
+  vital_signs:                        # vital_sign_description -> feature
+    bmi:    ["BMI", "Body Mass Index"]
+    height: ["Height"]
+    weight: ["Weight"]
+    sbp:    ["BP Systolic", "Systolic Blood Pressure", "Systolic"]
+    dbp:    ["BP Diastolic", "Diastolic Blood Pressure", "Diastolic"]
+  lab_analytes:                       # component_name -> feature
+    wbc:            ["WBC", "White Blood Cell Count"]
+    hemoglobin:     ["Hemoglobin", "HGB"]
+    platelet_count: ["Platelet", "Platelet Count", "PLT"]
+    creatinine:     ["Creatinine"]
+    alt:            ["ALT", "Alanine Aminotransferase"]
+    ast:            ["AST", "Aspartate Aminotransferase"]
+    cea:            ["CEA", "Carcinoembryonic Antigen"]
+  medications:
+    aspirin: ["aspirin"]
+    nsaid:   ["ibuprofen", "naproxen", "nsaid", "celecoxib", "diclofenac"]
+  comorbidity_icd:                    # ICD prefixes (either coding system)
+    ibd:             ["K50", "K51", "555", "556"]
+    diabetes:        ["E10", "E11", "250"]
+    obesity:         ["E66", "278"]
+    hypertension_dx: ["I10", "401"]
+  symptom_icd:
+    rectal_bleeding: ["K625", "5693", "5780", "5781"]
+    bowel_changes:   ["R197", "78791"]
+    abdominal_pain:  ["R109", "R10", "7890"]
+  procedures:
+    prior_polypectomy: ["polypectomy"]        # surgical_hx procedure text contains
+  family_history:
+    questionnaire_flag: fam_hx_colon_cancer    # preferred: survey flag
+    positive_values: ["yes", "y", "1", "true"]
+    crc_terms: ["colorectal", "colon cancer", "rectal cancer"]   # fallback: family text
+
+thresholds:
+  obese_bmi: 30
+  hypertension_sbp: 140
+  hypertension_dbp: 90
+  platelet_high: 400        # 10^3/uL
+  platelet_low: 150
+  creatinine_high: 1.3      # mg/dL
+
 model:
-  candidates: [xgboost, random_forest, logistic_l2]
-  imbalance: scale_pos_weight       # NOT SMOTE (fabricates fake carriers)
+  candidates: [logistic_l2, random_forest, xgboost]
+  primary_population: matched
+  imbalance:
+    matched: none
+    full: class_weight
   cv_folds: 5
-  cv_stratified: true
-  search: randomized               # RandomizedSearchCV, 20 iters
+  cv: stratified_group
+  search: randomized
   search_iters: 20
-  threshold_tuning: recall          # screening context
-  random_state: 42
+  threshold_tuning:
+    objective: recall
+    min_precision: 0.10
+  select_metric: pr_auc
 
-# ---------------------------------------------------------------------
-# Evaluation 評估
-# ---------------------------------------------------------------------
 evaluation:
-  metrics: [auc, pr_auc, calibration]
-  stratify_by: ancestry_group       # OVERALL + per-ancestry (main improvement)
+  metrics: [auc, pr_auc, calibration, brier]
+  stratify_by: ancestry_group
+  calibration_bins: 10
+  cross_cohort: true
   shap: treeexplainer
-  carrier_enrichment: true          # case vs control freq + enrichment + p, per gene
+  shap_top_k: 15
+  carrier_enrichment: true

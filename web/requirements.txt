@@ -1,0 +1,11 @@
+# Web app (Streamlit). Pin the DS stack to the SAME versions used to train the
+# model so the pickled Pipeline loads cleanly (see env/environment.yml).
+streamlit==1.39.0
+scikit-learn==1.3.2
+xgboost==2.0.3
+shap==0.44.0
+pandas==2.1.4
+numpy==1.26.2
+joblib==1.3.2
+matplotlib==3.8.2
+scipy==1.11.4
