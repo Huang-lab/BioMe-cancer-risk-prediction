@@ -1,0 +1,148 @@
+# =====================================================================
+# crc.yaml — Colorectal cancer risk model config (BioMe Cohort I, Regeneron WXS)
+# Single source of truth. The shared scripts read either crc.yaml or breast.yaml.
+# Any column name tagged RECONCILE must be confirmed against
+# BRSPD_Data_Dictionary_v4.csv + the *.header files before running on Minerva.
+# =====================================================================
+
+cancer: crc                       # used to name outputs: results/crc/
+label: "Colorectal cancer"
+
+# ---------------------------------------------------------------------
+# Paths (Minerva). Keep every path here, nowhere else in the code.
+# ---------------------------------------------------------------------
+paths:
+  workdir:   /sc/arion/projects/rg_huangk06/variants_PLP_BioMe/Cancer_risk_prediction
+  roster:    Regeneron/metadata/RegenWXS_HX_Newgroups.250109.tsv   # ALL patients
+  ehr_dir:   .                    # dir holding the *.txt EHR extracts
+  data_dict: BRSPD_Data_Dictionary_v4.csv
+  carrier_flags: genomic/crc_clinvar_PLP_carriers.tsv   # I generate this separately
+  outdir:    results/crc
+
+# EHR tables this model reads (skip the rest). Filenames as delivered.
+ehr_tables:
+  demographics:   Demographics.txt
+  problem_list:   Problem_List.txt
+  enc_diagnosis:  Encounter_Diagnosis.txt
+  vitals:         Vitals.txt
+  labs:           Order_results.txt
+  social:         Social_History.txt
+  family:         Family_History.txt
+  medical_hx:     Medical_History.txt
+  surgical_hx:    Surgical_History.txt
+  meds:           Medications.txt
+
+# ---------------------------------------------------------------------
+# Phenotype 表型定義 — who is a case
+# ---------------------------------------------------------------------
+phenotype:
+  case_icd10_prefix: ["C18", "C19", "C20"]        # colon, rectosigmoid, rectum
+  case_icd9_prefix:  ["153", "154"]
+  dx_date_col: RECONCILE:diagnosis_date            # in enc_diagnosis / problem_list
+  icd_col:     RECONCILE:icd_code
+  patient_id_col: RECONCILE:masked_mrn             # join key across ALL tables + roster
+  # index_date = earliest qualifying dx date per case
+  index_date: earliest_qualifying_dx
+
+# ---------------------------------------------------------------------
+# Controls 對照組
+# ---------------------------------------------------------------------
+controls:
+  # any_cancer_free = free of ALL cancers (cleaner, smaller, slightly healthier)
+  # target_cancer_free = only free of CRC (larger, other cancers allowed)
+  definition: any_cancer_free       # switch to target_cancer_free to compare
+  # any-cancer detection for exclusion: broad malignancy net
+  cancer_icd10_prefix: ["C"]
+  cancer_icd9_prefix:  ["140","141","142","143","144","145","146","147","148",
+                        "149","150","151","152","153","154","155","156","157",
+                        "158","159","160","161","162","163","164","165","170",
+                        "171","172","174","175","176","179","180","181","182",
+                        "183","184","185","186","187","188","189","190","191",
+                        "192","193","194","195","196","197","198","199","200",
+                        "201","202","203","204","205","206","207","208","209"]
+
+# ---------------------------------------------------------------------
+# Matching 風險集抽樣 — risk-set sampling
+# ---------------------------------------------------------------------
+matching:
+  method: risk_set                  # control must be cancer-free & observed at case index_date
+  k_controls: 4                     # controls per case
+  match_vars: [age_at_index, sex, ancestry_pcs, followup_len]
+  ancestry: pcs_if_available        # WXS PCs; fall back to self-reported race/ethnicity
+  n_pcs: 4
+  caliper_sd: 0.2                   # nearest-neighbour caliper on matched distance
+  also_emit_unmatched: true         # full-cohort dataset w/ class weights, for comparison
+
+# ---------------------------------------------------------------------
+# Temporal window 時間窗 — leakage control (the key lesson from the source repo)
+# ---------------------------------------------------------------------
+temporal_window:
+  # features drawn ONLY from [index_date - max, index_date - min]
+  min_lead_days: 182                # 6 months
+  max_lookback_days: 730            # 2 years
+  drop_on_or_after_index: true
+  log_dropped_post_index: true      # expect this count to be large; report it
+
+# ---------------------------------------------------------------------
+# ClinVar P/LP germline panel 帶因者狀態
+# ---------------------------------------------------------------------
+genomics:
+  panel: [MLH1, MSH2, MSH6, PMS2, EPCAM, APC, MUTYH, SMAD4, STK11,
+          BMPR1A, PTEN, POLE, POLD1, NTHL1]
+  aggregate_flag: lynch_any         # plus one-hot per gene
+  extra_aggregate: crc_panel_any    # any P/LP across the whole panel
+
+# ---------------------------------------------------------------------
+# Features 特徵
+# ---------------------------------------------------------------------
+features:
+  shared:
+    - age_at_index
+    - sex
+    - ancestry_pcs
+    - bmi                           # Vitals; last value in window
+    - smoking_status                # Social_History
+    - alcohol_use                   # Social_History
+    - family_hx_crc                 # Family_History
+    - charlson_index                # from Problem_List comorbidities
+  crc_specific:
+    labs:                           # Order_results; last value + mean-in-window
+      - WBC
+      - hemoglobin                  # anemia signal
+      - CEA                         # if present
+    trajectory:                     # 軌跡特徵 — go beyond source repo
+      - bmi_slope                   # rate of BMI change across window
+      - weight_loss_velocity
+      - hemoglobin_slope
+    procedures:                     # Surgical_History / Medical_History
+      - prior_colonoscopy
+      - prior_polypectomy
+    comorbidities:                  # Problem_List flags
+      - ibd
+      - diabetes
+      - obesity
+    medications:                    # Medications; protective/risk exposures
+      - aspirin
+      - nsaid
+
+# ---------------------------------------------------------------------
+# Modeling 建模
+# ---------------------------------------------------------------------
+model:
+  candidates: [xgboost, random_forest, logistic_l2]
+  imbalance: scale_pos_weight       # NOT SMOTE (fabricates fake carriers)
+  cv_folds: 5
+  cv_stratified: true
+  search: randomized               # RandomizedSearchCV, 20 iters
+  search_iters: 20
+  threshold_tuning: recall          # screening context
+  random_state: 42
+
+# ---------------------------------------------------------------------
+# Evaluation 評估
+# ---------------------------------------------------------------------
+evaluation:
+  metrics: [auc, pr_auc, calibration]
+  stratify_by: ancestry_group       # OVERALL + per-ancestry (main improvement)
+  shap: treeexplainer
+  carrier_enrichment: true          # case vs control freq + enrichment + p, per gene

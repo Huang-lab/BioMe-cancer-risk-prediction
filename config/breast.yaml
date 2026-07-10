@@ -1,0 +1,115 @@
+# =====================================================================
+# breast.yaml — Breast cancer risk model config (BioMe Cohort I, Regeneron WXS)
+# Same key structure as crc.yaml so the shared scripts read either.
+# Differences from CRC: phenotype codes, gene panel, and reproductive
+# features from OB_HISTORY (which the CRC-only source repo never had).
+# Column names tagged RECONCILE: confirm against BRSPD_Data_Dictionary_v4.csv.
+# =====================================================================
+
+cancer: breast
+label: "Breast cancer"
+
+paths:
+  workdir:   /sc/arion/projects/rg_huangk06/variants_PLP_BioMe/Cancer_risk_prediction
+  roster:    Regeneron/metadata/RegenWXS_HX_Newgroups.250109.tsv
+  ehr_dir:   .
+  data_dict: BRSPD_Data_Dictionary_v4.csv
+  carrier_flags: genomic/breast_clinvar_PLP_carriers.tsv
+  outdir:    results/breast
+
+ehr_tables:
+  demographics:   Demographics.txt
+  problem_list:   Problem_List.txt
+  enc_diagnosis:  Encounter_Diagnosis.txt
+  vitals:         Vitals.txt
+  labs:           Order_results.txt
+  social:         Social_History.txt
+  family:         Family_History.txt
+  medical_hx:     Medical_History.txt
+  surgical_hx:    Surgical_History.txt
+  meds:           Medications.txt
+  ob_hx:          OB_HISTORY.txt          # breast only — reproductive history
+
+phenotype:
+  case_icd10_prefix: ["C50"]              # malignant neoplasm of breast
+  case_icd9_prefix:  ["174", "175"]       # female / male breast
+  dx_date_col: RECONCILE:diagnosis_date
+  icd_col:     RECONCILE:icd_code
+  patient_id_col: RECONCILE:masked_mrn
+  index_date: earliest_qualifying_dx
+  # NOTE: decide whether to restrict to female or model sex as covariate.
+  # Default keeps both and includes sex; C50 in males is rare but real.
+  restrict_sex: null                      # null = keep all; "F" to restrict
+
+controls:
+  definition: any_cancer_free             # switch to target_cancer_free to compare
+  cancer_icd10_prefix: ["C"]
+  cancer_icd9_prefix:  ["140","141","142","143","144","145","146","147","148",
+                        "149","150","151","152","153","154","155","156","157",
+                        "158","159","160","161","162","163","164","165","170",
+                        "171","172","174","175","176","179","180","181","182",
+                        "183","184","185","186","187","188","189","190","191",
+                        "192","193","194","195","196","197","198","199","200",
+                        "201","202","203","204","205","206","207","208","209"]
+
+matching:
+  method: risk_set
+  k_controls: 4
+  match_vars: [age_at_index, sex, ancestry_pcs, followup_len]
+  ancestry: pcs_if_available
+  n_pcs: 4
+  caliper_sd: 0.2
+  also_emit_unmatched: true
+
+temporal_window:
+  min_lead_days: 182
+  max_lookback_days: 730
+  drop_on_or_after_index: true
+  log_dropped_post_index: true
+
+genomics:
+  panel: [BRCA1, BRCA2, PALB2, ATM, CHEK2, TP53, PTEN, CDH1, STK11,
+          BARD1, RAD51C, RAD51D]
+  aggregate_flag: hboc_any                # hereditary breast/ovarian aggregate
+  extra_aggregate: breast_panel_any
+
+features:
+  shared:
+    - age_at_index
+    - sex
+    - ancestry_pcs
+    - bmi
+    - smoking_status
+    - alcohol_use
+    - family_hx_breast                    # Family_History
+    - charlson_index
+  breast_specific:
+    reproductive:                         # OB_HISTORY — strongest signal the repo lacked
+      - parity
+      - age_at_menarche
+      - age_at_first_birth
+    hormonal:                             # Medications
+      - hrt_exposure
+      - oral_contraceptive
+    procedures:                           # Surgical_History / Medical_History
+      - prior_breast_biopsy
+      - benign_breast_disease
+    trajectory:                           # 軌跡特徵 — beyond source repo
+      - bmi_slope
+      - weight_change_velocity
+
+model:
+  candidates: [xgboost, random_forest, logistic_l2]
+  imbalance: scale_pos_weight             # NOT SMOTE
+  cv_folds: 5
+  cv_stratified: true
+  search: randomized
+  search_iters: 20
+  threshold_tuning: recall
+  random_state: 42
+
+evaluation:
+  metrics: [auc, pr_auc, calibration]
+  stratify_by: ancestry_group
+  shap: treeexplainer
+  carrier_enrichment: true

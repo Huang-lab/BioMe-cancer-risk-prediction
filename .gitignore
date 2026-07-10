@@ -1,0 +1,45 @@
+# =====================================================================
+# NEVER commit PHI. BioMe EHR + variant data are IRB-restricted and live
+# ONLY on Minerva. Nothing derived from real patient rows belongs in git.
+# =====================================================================
+
+# Raw EHR extracts and roster / carrier files (delivered as .txt / .tsv)
+data/
+*.txt
+*.tsv
+
+# Model outputs, matched datasets, figures — anything derived from PHI
+results/*
+
+# Serialized models / intermediate objects
+*.pkl
+*.pickle
+*.joblib
+*.parquet
+*.feather
+*.h5
+*.npz
+
+# Synthetic test data is regenerable — keep it out of git too
+tests/synthetic/
+
+# --- keep the tracked result subdirs (structure only, no contents) ---
+!results/crc/
+!results/breast/
+results/crc/*
+results/breast/*
+!results/crc/.gitkeep
+!results/breast/.gitkeep
+
+# --- explicit allow-list: schema is column names / definitions, NOT PHI ---
+!schema/*.header
+!schema/BRSPD_Data_Dictionary_v4.csv
+
+# Python / env cruft
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+env/*
+!env/.gitkeep
+.DS_Store
