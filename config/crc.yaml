@@ -24,7 +24,6 @@ paths:
   # workdir is the PARENT so roster / PC / carrier / EHR paths stay relative
   # (keeps --data-root working for synthetic runs).
   workdir:   /sc/arion/projects/rg_huangk06/variants_PLP_BioMe
-  data_dict: Cancer_risk_prediction/BRSPD_Data_Dictionary_v4.csv
   outdir:    Cancer_risk_prediction/results/crc
 
 # ---------------------------------------------------------------------

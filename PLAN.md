@@ -35,20 +35,21 @@ the questions still blocking a real Minerva run.
 - **Web:** Streamlit (`web/app.py`) + framework-agnostic `web/predict.py` (mirrors
   the reference's predict contract for an easy FastAPI swap later).
 
-## Open questions (still `RECONCILE:` — confirm on Minerva before the real run)
+## Cohort I — resolved against real Minerva data
 
-1. **Roster columns** (`RegenWXS_HX_Newgroups.tsv` header not provided): the
-   ehr_id column, the **sample_id↔ehr_id crosswalk** (carriers use `SINAI_*`,
-   clinical files key on `sem_id`/`RGN`), the group column + exact **CRC case
-   label**, the `Newgroups` ancestry column, and PC column names. *Highest stakes —
-   every carrier↔EHR join depends on the crosswalk.*
-2. **Cohort II clinical directory** (`ehr_dir` for Sema4; `src/Regen` confirmed for I).
-3. **`BRSPD_Data_Dictionary_v4.csv`** — value codings/units to confirm categorical
-   encodings and lab units.
-4. **Exact value strings** for `component_name` (labs) and `vital_sign_description`
+Clinical files key on `sem_id` (SINAI-format values); roster `SINAI_ID` == `sem_id`
+(EHR key) == carrier `sample_id`; `MASKED_MRN` (int) joins the separate
+`GSA_GDA_PCA_V2.txt` PC file. Config wired: `case_labels=[Colon/Rectum]`,
+`control_label="Control (age≥50)"`, `ancestry=genetically_determined`,
+`pc_cols=[PC1..PC4]`; `scripts/prep_roster_cohortI.py` builds the augmented roster.
+
+## Open questions (CRC)
+
+1. **Cohort II clinical directory** (`ehr_dir` for Sema4) — cohort II still stubbed.
+2. **Exact value strings** for `component_name` (labs) and `vital_sign_description`
    (vitals) — `feature_maps` has best-guesses; confirm against the data.
-5. **Whether Regeneron's clinical id column** is literally `sem_id` (assumed; a
-   per-cohort `clinical_id_col` override exists in config if not).
+
+(The BRSPD data dictionary is not used by the pipeline.)
 
 ## Notes / risks carried forward
 

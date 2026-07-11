@@ -25,10 +25,10 @@ Key structural facts baked into the config:
 
 | Item | Status |
 |------|--------|
-| `BRSPD_Data_Dictionary_v4.csv` (value codings, units) | ⛔ not in container |
-| Roster header — `RegenWXS_HX_Newgroups.tsv` columns (ehr_id, **sample_id crosswalk**, group labels, `Newgroups`, PCs) | ⛔ not provided; `roster:` keys are RECONCILE |
-| Cohort II clinical directory path | ⛔ RECONCILE (`src/Sema4` placeholder) |
+| Cohort II clinical directory path | ⛔ RECONCILE (`src/Sema4` placeholder) — cohort I is fully wired |
 | Exact `component_name` / `vital_sign_description` value strings | best-guess maps in `feature_maps` — confirm against data |
+
+(Cohort I roster columns are resolved; the data dictionary is not used by the pipeline.)
 
 ## How a header is captured on Minerva (no data leaves)
 
