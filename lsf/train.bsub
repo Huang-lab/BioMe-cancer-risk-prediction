@@ -5,14 +5,16 @@
 #   bsub < lsf/train.bsub
 # Heavier CPU/mem for the RandomizedSearchCV sweep; tune to your account.
 # =====================================================================
-#BSUB -J crc_train
-#BSUB -P acc_rg_huangk06
-#BSUB -q premium
-#BSUB -n 16
-#BSUB -R "rusage[mem=12000]"
-#BSUB -W 8:00
-#BSUB -o logs/crc_train.%J.out
-#BSUB -e logs/crc_train.%J.err
+#BSUB -J crc_train                  # job name
+#BSUB -P acc_rg_huangk06            # <-- SET to your allocation account (acc_...)
+#BSUB -q premium                    # queue
+#BSUB -n 16                         # compute cores (single node)
+#BSUB -R span[hosts=1]              # keep all cores on one host (shared-memory job)
+#BSUB -R rusage[mem=12000]          # MB per core
+#BSUB -W 8:00                       # walltime HH:MM
+#BSUB -o %J.stdout                  # output log (%J = JobID)
+#BSUB -eo %J.stderr                 # error log
+#BSUB -L /bin/bash                  # initialize the execution environment
 
 set -euo pipefail
 
@@ -23,7 +25,6 @@ module load anaconda3
 source activate cancer-risk-biome
 
 cd "$LS_SUBCWD"
-mkdir -p logs
 
 python scripts/train.py --config "$CONFIG" --population both
 python scripts/evaluate.py --config "$CONFIG"
