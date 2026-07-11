@@ -21,9 +21,11 @@ label: "Colorectal cancer"
 random_state: 42
 
 paths:
-  workdir:   /sc/arion/projects/rg_huangk06/variants_PLP_BioMe/Cancer_risk_prediction
-  data_dict: BRSPD_Data_Dictionary_v4.csv
-  outdir:    results/crc
+  # workdir is the PARENT so roster / PC / carrier / EHR paths stay relative
+  # (keeps --data-root working for synthetic runs).
+  workdir:   /sc/arion/projects/rg_huangk06/variants_PLP_BioMe
+  data_dict: Cancer_risk_prediction/BRSPD_Data_Dictionary_v4.csv
+  outdir:    Cancer_risk_prediction/results/crc
 
 # ---------------------------------------------------------------------
 # Cohorts. Same key structure per cohort so one loader reads either.
@@ -33,9 +35,9 @@ paths:
 cohorts:
   - name: cohortI
     platform: regeneron_wxs
-    roster:          Regeneron/metadata/RegenWXS_HX_Newgroups.250109.tsv
-    ehr_dir:         src/Regen
-    clinical_id_col: sem_id
+    roster:          Cancer_risk_prediction/derived/RegenWXS_HX_Newgroups.withPC.tsv
+    ehr_dir:         Cancer_risk_prediction/src/Regen
+    clinical_id_col: sem_id          # clinical files key on sem_id (SINAI-format values)
     carrier_flags:   Biome-alphamissense-calibration/results/cohortI/all_carriers.tsv
   - name: cohortII
     platform: sema4_wxs
@@ -56,14 +58,18 @@ cohort_strategy:
 # ---------------------------------------------------------------------
 roster:
   sep: "\t"
-  ehr_id_col:         RECONCILE:sem_id       # must match clinical sem_id values
-  sample_id_col:      RECONCILE:sample_id    # SINAI_* — join key to the carrier file
-  group_col:          RECONCILE:group
-  case_labels:        [RECONCILE:CRC]        # exact roster value(s) meaning "CRC case"
-  control_label:      control
+  # ehr_id and sample_id are the SAME source id (SINAI). We point ehr_id at
+  # SINAI_ID and sample_id at the SAMPLE_ID alias (added by prep_roster_cohortI.py)
+  # so read_roster doesn't collapse the two same-named columns. MASKED_MRN is a
+  # plain integer used only to join the PC file — NOT a clinical/carrier key.
+  ehr_id_col:         SINAI_ID               # == clinical sem_id values
+  sample_id_col:      SAMPLE_ID              # alias of SINAI_ID (== carrier sample_id)
+  group_col:          Group
+  case_labels:        ["Colon/Rectum"]
+  control_label:      "Control (age≥50)"     # ≥ is U+2265 — keep verbatim
   drop_other_groups:  true
-  ancestry_group_col: RECONCILE:Newgroups    # genetically-inferred ancestry strata
-  pc_cols:            RECONCILE:[PC1, PC2, PC3, PC4]
+  ancestry_group_col: genetically_determined
+  pc_cols:            [PC1, PC2, PC3, PC4]
 
 # ---------------------------------------------------------------------
 # RAW clinical files (headers resolved). `long: true` = one row per

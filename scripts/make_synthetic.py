@@ -42,19 +42,29 @@ def _d(ts):
     return ts.strftime(DFMT) if isinstance(ts, pd.Timestamp) else ts
 
 
+DECOY_GROUP = "Other Cancer"   # exercises roster.drop_other_groups (neither case nor control)
+
+
 def make_patients(rng, cohort_name, n_cases, n_controls, id_start, cfg):
     case_label = cfgmod.resolve(cfg["roster"]["case_labels"])[0]
     control_label = cfg["roster"]["control_label"]
     n_pc = len(cfgmod.resolve(cfg["roster"]["pc_cols"]))
+    n_decoy = max(5, n_controls // 20)
     rows = []
-    for i in range(n_cases + n_controls):
+    for i in range(n_cases + n_controls + n_decoy):
         is_case = i < n_cases
+        is_control = n_cases <= i < n_cases + n_controls
         gid = id_start + i
         index = pd.Timestamp("2015-01-01") + pd.Timedelta(days=int(rng.integers(0, 2200)))
-        age = int(rng.integers(45, 82))
+        # controls are age>=50 by definition (encoded in the roster group label)
+        age = int(rng.integers(50, 82)) if is_control else int(rng.integers(45, 82))
+        group = case_label if is_case else (control_label if is_control else DECOY_GROUP)
+        # clinical files key on sem_id whose VALUES are SINAI-format ids; the roster's
+        # SINAI_ID == sem_id == carrier sample_id. MASKED_MRN is a separate integer.
+        sinai = f"SINAI_{gid}_AB{int(rng.integers(10_000_000, 99_999_999))}"
         rows.append(dict(
-            ehr_id=f"RGN{gid:06d}", sample_id=f"SINAI_{gid:05d}", is_case=is_case,
-            group=case_label if is_case else control_label,
+            ehr_id=sinai, sample_id=sinai, masked_mrn=str(700_000 + gid),
+            is_case=is_case, group=group,
             ancestry_group=rng.choice(ANCESTRY_GROUPS, p=[0.4, 0.3, 0.2, 0.1]),
             pcs=rng.normal(0, 1, size=n_pc), index_date=index,
             year_of_birth=index.year - age, sex=rng.choice(["M", "F"]), cohort=cohort_name,
@@ -65,11 +75,13 @@ def make_patients(rng, cohort_name, n_cases, n_controls, id_start, cfg):
 def gen_roster(cfg, patients, path):
     r = cfg["roster"]
     out = pd.DataFrame({
-        cfgmod.resolve(r["ehr_id_col"]): patients["ehr_id"],
-        cfgmod.resolve(r["sample_id_col"]): patients["sample_id"],
+        cfgmod.resolve(r["ehr_id_col"]): patients["ehr_id"],       # SINAI_ID
+        cfgmod.resolve(r["sample_id_col"]): patients["sample_id"],  # SAMPLE_ID alias (== SINAI_ID)
+        "MASKED_MRN": patients["masked_mrn"],                       # plain int (PC-join key on real data)
         cfgmod.resolve(r["group_col"]): patients["group"],
         cfgmod.resolve(r["ancestry_group_col"]): patients["ancestry_group"],
     })
+    # PCs baked directly into the synthetic roster (the real prep script attaches them on Minerva)
     pc_mat = np.vstack(patients["pcs"].to_list())
     for j, name in enumerate(cfgmod.resolve(r["pc_cols"])):
         out[name] = pc_mat[:, j]
