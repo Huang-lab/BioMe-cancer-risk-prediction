@@ -5,7 +5,7 @@ and tabs for model performance / feature importance / genomic findings / methods
 but served as a single Python app that loads the pickled Pipeline directly.
 
 Run locally against the synthetic model:
-  streamlit run web/app.py -- --model-dir tests/synthetic/results/crc
+  streamlit run web/app.py -- --model-dir tests/synthetic/Cancer_risk_prediction/CRC
 
 PHI-free: the form takes manually-entered values only; nothing here reads patient data.
 """
@@ -32,9 +32,11 @@ LEVEL_MSG = {
 
 def resolve_model_dir():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model-dir", default=os.environ.get("BIOME_MODEL_DIR", "results/crc"))
+    ap.add_argument("--model-dir",
+                    default=os.environ.get("BIOME_MODEL_DIR", "Cancer_risk_prediction/CRC"))
     args, _ = ap.parse_known_args()
-    for d in (args.model_dir, "tests/synthetic/results/crc", "results/crc"):
+    for d in (args.model_dir, "tests/synthetic/Cancer_risk_prediction/CRC",
+              "Cancer_risk_prediction/CRC"):
         if os.path.exists(os.path.join(d, "model.pkl")):
             return d
     return args.model_dir

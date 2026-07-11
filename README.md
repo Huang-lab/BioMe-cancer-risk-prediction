@@ -46,7 +46,7 @@ ICD codes, modeling). Everything reads column names/params from `config/*.yaml`.
 ```bash
 pip install -r web/requirements.txt          # or use env/environment.yml
 python scripts/run.py --config config/crc.yaml --data-root tests/synthetic --with-synthetic
-streamlit run web/app.py -- --model-dir tests/synthetic/results/crc
+streamlit run web/app.py -- --model-dir tests/synthetic/Cancer_risk_prediction/CRC
 pytest -q
 ```
 

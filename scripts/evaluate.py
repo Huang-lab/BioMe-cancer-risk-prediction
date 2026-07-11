@@ -83,8 +83,12 @@ def global_importance(model, X, feature_names, is_tree, top_k):
             import shap
             expl = shap.TreeExplainer(clf)
             sv = expl.shap_values(Xt)
-            sv = sv[1] if isinstance(sv, list) else sv
-            imp = np.abs(sv).mean(axis=0)
+            if isinstance(sv, list):          # older shap: [class0, class1]
+                sv = sv[-1]
+            sv = np.asarray(sv)
+            if sv.ndim == 3:                  # shap>=0.5x: (n, features, classes)
+                sv = sv[:, :, -1]
+            imp = np.abs(sv).mean(axis=0).ravel()
         except Exception as e:  # pragma: no cover
             LOG.warning("SHAP failed (%s); using tree feature_importances_", e)
             imp = getattr(clf, "feature_importances_", np.zeros(len(names)))
