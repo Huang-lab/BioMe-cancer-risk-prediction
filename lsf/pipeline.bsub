@@ -25,7 +25,13 @@ source activate cancer-risk-biome
 cd "$LS_SUBCWD"
 mkdir -p logs
 
+# Build the augmented rosters (attach PCs + SAMPLE_ID alias). Idempotent — safe to
+# re-run; refresh after any roster/PC update. (Shared across CRC & breast.)
+python scripts/prep_roster_cohortI.py
+python scripts/prep_roster_cohortII.py
+
 # Real data lives at paths.workdir in the config; no --data-root here.
+# Trains + CV on train_cohorts (Cohort I), then external-validates holdout (Cohort II).
 python scripts/run.py --config "$CONFIG" --population both
 
-echo "Done. Outputs under the config's paths.outdir."
+echo "Done. Outputs under the config's paths.outdir (Cancer_risk_prediction/CRC)."
