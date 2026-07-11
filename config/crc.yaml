@@ -40,8 +40,8 @@ cohorts:
     carrier_flags:   Biome-alphamissense-calibration/results/cohortI/all_carriers.tsv
   - name: cohortII
     platform: sema4_wxs
-    roster:          metadata/Sema4WXS_HX_Newgroups.250109.tsv
-    ehr_dir:         RECONCILE:src/Sema4      # TBD — confirm the Cohort II clinical dir
+    roster:          Cancer_risk_prediction/derived/Sema4WXS_HX_Newgroups.withPC.tsv
+    ehr_dir:         Cancer_risk_prediction/src/Sema4
     clinical_id_col: sem_id
     carrier_flags:   Biome-alphamissense-calibration/results/cohortII/all_carriers.tsv
 

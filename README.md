@@ -53,10 +53,14 @@ pytest -q
 **On Minerva (real data at `paths.workdir`):**
 ```bash
 conda env create -f env/environment.yml && conda activate cancer-risk-biome
-bsub < lsf/pipeline.bsub          # full pipeline; CONFIG=config/crc.yaml
+python scripts/prep_roster_cohortI.py     # attach PCs + SAMPLE_ID alias (Cohort I)
+python scripts/prep_roster_cohortII.py    # same for Cohort II (external validation)
+bsub < lsf/pipeline.bsub                  # full pipeline; CONFIG=config/crc.yaml
 ```
-First confirm the remaining `RECONCILE:` names (roster columns, Cohort II dir) —
-see `PLAN.md`.
+The model trains + cross-validates on **Cohort I**; `external_validate.py` then
+scores **Cohort II** (held out) → `external_validation_cohortII.json` +
+`calibration_cohortII.png`. Train/holdout cohorts are set in
+`config/crc.yaml → cohort_strategy`.
 
 ## Layout
 
