@@ -82,22 +82,30 @@ def main():
             axis=1,
         )
 
-        # sex from demographics (matching covariate + feature)
-        demo = data.load_tidy(out, name, "demographics")
-        if demo is not None and "sex" in demo.columns:
-            roster = roster.merge(demo[["ehr_id", "sex"]].drop_duplicates("ehr_id"),
-                                  on="ehr_id", how="left")
+        # sex: prefer the curated roster GENDER; else fall back to Demographics
+        if "roster_sex" in roster.columns:
+            roster["sex"] = roster["roster_sex"]
+        else:
+            demo = data.load_tidy(out, name, "demographics")
+            if demo is not None and "sex" in demo.columns:
+                roster = roster.merge(demo[["ehr_id", "sex"]].drop_duplicates("ehr_id"),
+                                      on="ehr_id", how="left")
         if "sex" not in roster.columns:
             roster["sex"] = pd.NA
 
-        # age_at_index from Questionnaire.YEAR_OF_BIRTH (no DOB in Demographics)
-        quest = data.load_tidy(out, name, "questionnaire")
-        if quest is not None and "year_of_birth" in quest.columns:
-            yob = quest[["ehr_id", "year_of_birth"]].drop_duplicates("ehr_id")
-            roster = roster.merge(yob, on="ehr_id", how="left")
-            roster["age_at_index"] = roster["index_date"].dt.year - roster["year_of_birth"]
-        else:
-            roster["age_at_index"] = pd.NA
+        # age_at_index: prefer the curated roster Age_at_diagnosis; else derive from
+        # Questionnaire.YEAR_OF_BIRTH (no DOB in Demographics).
+        roster["age_at_index"] = pd.NA
+        if "roster_age" in roster.columns:
+            roster["age_at_index"] = pd.to_numeric(roster["roster_age"], errors="coerce")
+        need = roster["age_at_index"].isna()
+        if need.any():
+            quest = data.load_tidy(out, name, "questionnaire")
+            if quest is not None and "year_of_birth" in quest.columns:
+                yob = quest[["ehr_id", "year_of_birth"]].drop_duplicates("ehr_id")
+                roster = roster.merge(yob, on="ehr_id", how="left")
+                derived = roster["index_date"].dt.year - roster["year_of_birth"]
+                roster["age_at_index"] = roster["age_at_index"].fillna(derived)
 
         n_before = len(roster)
         roster = roster[roster["index_date"].notna()].copy()

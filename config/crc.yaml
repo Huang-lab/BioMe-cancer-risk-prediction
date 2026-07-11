@@ -70,6 +70,8 @@ roster:
   drop_other_groups:  true
   ancestry_group_col: genetically_determined
   pc_cols:            [PC1, PC2, PC3, PC4]
+  age_col:            Age_at_diagnosis       # curated age in the roster (else falls back to YEAR_OF_BIRTH)
+  sex_col:            GENDER                 # curated sex in the roster (else falls back to Demographics)
 
 # ---------------------------------------------------------------------
 # RAW clinical files (headers resolved). `long: true` = one row per

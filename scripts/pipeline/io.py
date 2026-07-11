@@ -86,6 +86,14 @@ def read_roster(cfg: dict, path: str) -> tuple[pd.DataFrame, list[str]]:
     for src, canon in zip(pc_src, pc_canon):
         rename[src] = canon
 
+    # optional curated columns in the roster (used preferentially by phenotype)
+    for opt_key, canon in (("age_col", "roster_age"), ("sex_col", "roster_sex")):
+        col = r.get(opt_key)
+        if col:
+            col = cfgmod.resolve(col)
+            if col in raw.columns:
+                rename[col] = canon
+
     missing = [c for c in rename if c not in raw.columns]
     if missing:
         raise KeyError(

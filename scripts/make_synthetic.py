@@ -64,7 +64,7 @@ def make_patients(rng, cohort_name, n_cases, n_controls, id_start, cfg):
         sinai = f"SINAI_{gid}_AB{int(rng.integers(10_000_000, 99_999_999))}"
         rows.append(dict(
             ehr_id=sinai, sample_id=sinai, masked_mrn=str(700_000 + gid),
-            is_case=is_case, group=group,
+            is_case=is_case, group=group, age=age,
             ancestry_group=rng.choice(ANCESTRY_GROUPS, p=[0.4, 0.3, 0.2, 0.1]),
             pcs=rng.normal(0, 1, size=n_pc), index_date=index,
             year_of_birth=index.year - age, sex=rng.choice(["M", "F"]), cohort=cohort_name,
@@ -81,6 +81,10 @@ def gen_roster(cfg, patients, path):
         cfgmod.resolve(r["group_col"]): patients["group"],
         cfgmod.resolve(r["ancestry_group_col"]): patients["ancestry_group"],
     })
+    if r.get("age_col"):
+        out[cfgmod.resolve(r["age_col"])] = patients["age"]        # Age_at_diagnosis
+    if r.get("sex_col"):
+        out[cfgmod.resolve(r["sex_col"])] = patients["sex"]        # GENDER
     # PCs baked directly into the synthetic roster (the real prep script attaches them on Minerva)
     pc_mat = np.vstack(patients["pcs"].to_list())
     for j, name in enumerate(cfgmod.resolve(r["pc_cols"])):
