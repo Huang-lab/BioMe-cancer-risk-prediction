@@ -162,6 +162,14 @@ def main():
     df = pd.read_csv(os.path.join(out, "dataset_matched.csv"))
     df_full = pd.read_csv(os.path.join(out, "dataset_full.csv"))
 
+    # internal evaluation is on the TRAINING cohort(s) only; the holdout cohort is
+    # scored separately by external_validate.py.
+    train_cohorts = (cfg.get("cohort_strategy") or {}).get("train_cohorts")
+    if train_cohorts:
+        df = df[df[spec["cohort_col"]].isin(train_cohorts)].copy()
+    enr_df = (df_full[df_full[spec["cohort_col"]].isin(train_cohorts)].copy()
+              if train_cohorts else df_full)
+
     X = df[spec["feature_cols"]]
     y = df[spec["label"]].astype(int).to_numpy()
     groups = df[spec["group_col"]].to_numpy()
@@ -186,7 +194,7 @@ def main():
     imp = global_importance(model, X, spec["feature_cols"], meta["is_tree"], ev["shap_top_k"])
     imp.to_csv(os.path.join(out, "feature_importance.csv"), index=False)
 
-    enr = carrier_enrichment(df_full, cfg["genomics"]["panel"],
+    enr = carrier_enrichment(enr_df, cfg["genomics"]["panel"],
                              [cfg["genomics"]["aggregate_flag"], cfg["genomics"]["extra_aggregate"]],
                              spec["label"])
     enr.to_csv(os.path.join(out, "carrier_enrichment.csv"), index=False)

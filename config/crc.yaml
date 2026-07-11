@@ -46,8 +46,9 @@ cohorts:
     carrier_flags:   Biome-alphamissense-calibration/results/cohortII/all_carriers.tsv
 
 cohort_strategy:
-  pooled:       true
-  cross_cohort: true
+  train_cohorts:   [cohortI]     # the model is trained ONLY on these cohorts
+  holdout_cohorts: [cohortII]    # external validation / calibration only — never trained on
+  cross_cohort:    true          # evaluate.py also runs a quick both-directions LR check
 
 # ---------------------------------------------------------------------
 # Roster (the spine). Join keys, labels, ancestry. The roster must ALSO carry

@@ -136,10 +136,16 @@ def main():
     out = cli.out_root(cfg)
     spec = util.load_json(os.path.join(out, "feature_spec.json"))
 
+    train_cohorts = (cfg.get("cohort_strategy") or {}).get("train_cohorts")
     pops = ["matched", "full"] if args.population == "both" else [args.population]
     for population in pops:
         path = os.path.join(out, f"dataset_{population}.csv")
         df = pd.read_csv(path)
+        if train_cohorts:
+            before = len(df)
+            df = df[df[spec["cohort_col"]].isin(train_cohorts)].copy()
+            LOG.info("restricting training to cohorts %s: %d -> %d subjects",
+                     train_cohorts, before, len(df))
         LOG.info("=== population=%s: %d subjects, %d cases ===",
                  population, len(df), int(df[spec["label"]].sum()))
         train_population(cfg, df, spec, population, out)
