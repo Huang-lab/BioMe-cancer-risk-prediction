@@ -28,5 +28,7 @@ cd "$LS_SUBCWD"
 
 python scripts/train.py --config "$CONFIG" --population both
 python scripts/evaluate.py --config "$CONFIG"
+python scripts/external_validate.py --config "$CONFIG"
+python scripts/report.py --config "$CONFIG"
 
-echo "Training + evaluation done."
+echo "Training + evaluation + external validation + report.md done."
