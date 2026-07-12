@@ -24,7 +24,7 @@ plus a Streamlit web app for interactive risk estimation.
 
 ## Pipeline (shared scripts, cancer & cohort chosen by config)
 
-`preprocess → phenotype → match → features → genomics → build_dataset → train → evaluate`
+`preprocess → phenotype → match → features → genomics → build_dataset → train → evaluate → external_validate → report`
 
 | Stage | Script |
 |-------|--------|
@@ -35,7 +35,9 @@ plus a Streamlit web app for interactive risk estimation.
 | Carrier join (`all_carriers.tsv` → per-gene / aggregate flags) | `scripts/genomics.py` |
 | Assemble matched + full datasets | `scripts/build_dataset.py` |
 | LR/RF/XGBoost, StratifiedGroupKFold, recall-tuned threshold | `scripts/train.py` |
-| AUC/PR-AUC, ancestry-stratified calibration, SHAP, enrichment, cross-cohort | `scripts/evaluate.py` |
+| AUC/PR-AUC, ancestry-stratified calibration, SHAP, enrichment, cross-cohort — matched **and** full-cohort comparison | `scripts/evaluate.py` |
+| Score the held-out cohort on the trained model | `scripts/external_validate.py` |
+| Consolidate metrics/features/tuning params/figures into one `report.md` | `scripts/report.py` |
 
 Shared library in `scripts/pipeline/` (config loader + RECONCILE resolution, IO,
 ICD codes, modeling). Everything reads column names/params from `config/*.yaml`.

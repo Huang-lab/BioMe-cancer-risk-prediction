@@ -120,6 +120,8 @@ def train_population(cfg, df, spec, population, out):
         m = df[c].dropna().astype(str)
         defaults[c] = m.mode().iloc[0] if not m.empty else ""
 
+    best_params = {k.replace("clf__", "", 1): v for k, v in search.best_params_.items()}
+
     tag = "" if population == "matched" else "_full"
     joblib.dump(model, os.path.join(out, f"model{tag}.pkl"))
     meta = {
@@ -133,7 +135,9 @@ def train_population(cfg, df, spec, population, out):
                     "precision_at_threshold": prec, "recall_at_threshold": rec,
                     "n": int(len(df)), "n_cases": int(y.sum())},
         "cv": {"scheme": "stratified_group" if population == "matched" else "stratified",
-               "n_splits": n_splits},
+               "n_splits": n_splits, "search_iters": mcfg["search_iters"]},
+        "candidates_tried": mcfg["candidates"],
+        "best_params": best_params,
         "is_tree": name in modeling.TREE_MODELS,
     }
     util.save_json(meta, os.path.join(out, f"model_metadata{tag}.json"))

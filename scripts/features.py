@@ -20,6 +20,11 @@ from pipeline import cli, codes, data, util  # noqa: E402
 
 LOG = util.get_logger("features")
 
+# pandas < 2.2 forwards an unrecognized `include_groups` kwarg straight into the
+# applied function instead of consuming it at the `.apply()` level (the pinned
+# Minerva env is pandas==2.1.4) -- only pass it where the installed pandas honors it.
+_PD_SUPPORTS_INCLUDE_GROUPS = tuple(int(p) for p in pd.__version__.split(".")[:2]) >= (2, 2)
+
 
 def _windowed(df, win):
     """Rows whose date falls in each subject's [lo, hi] window."""
@@ -55,9 +60,10 @@ def _long_agg(win_df, name_col, labels):
     sub = sub.dropna(subset=["value"]).sort_values("date")
     if sub.empty:
         return None
+    kwargs = {"include_groups": False} if _PD_SUPPORTS_INCLUDE_GROUPS else {}
     return (sub.groupby("ehr_id")["value"].last(),
             sub.groupby("ehr_id")["value"].mean(),
-            sub.groupby("ehr_id").apply(_slope_per_year, include_groups=False))
+            sub.groupby("ehr_id").apply(_slope_per_year, **kwargs))
 
 
 def lab_features(cfg, out, cohort_tables, win, feats):

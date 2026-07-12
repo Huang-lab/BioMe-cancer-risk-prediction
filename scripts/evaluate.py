@@ -149,6 +149,48 @@ def cross_cohort(cfg, df_full, spec, seed):
     return results
 
 
+def evaluate_population(cfg, out, spec, population, df, seed, ev, tag):
+    """Run OOF scoring + calibration + importance for one population (matched|full)
+    and write evaluation{tag}.json, feature_importance{tag}.csv/.png, calibration{tag}.png."""
+    meta = util.load_json(os.path.join(out, f"model_metadata{tag}.json"))
+    model = joblib.load(os.path.join(out, f"model{tag}.pkl"))
+
+    X = df[spec["feature_cols"]]
+    y = df[spec["label"]].astype(int).to_numpy()
+    groups = df[spec["group_col"]].to_numpy() if population == "matched" else None
+    cv = get_cv(population, cfg["model"]["cv_folds"], seed)
+
+    from sklearn.model_selection import cross_val_predict
+    oof = cross_val_predict(clone(model), X, y, cv=cv, groups=groups,
+                            method="predict_proba", n_jobs=-1)[:, 1]
+
+    overall = {"auc": float(roc_auc_score(y, oof)),
+               "pr_auc": float(average_precision_score(y, oof)),
+               "n": int(len(y)), "n_cases": int(y.sum())}
+    overall.update(calibration_stats(y, oof, ev["calibration_bins"]))
+    strata = stratified(y, oof, df[spec["ancestry_col"]].to_numpy(), ev["calibration_bins"])
+    LOG.info("[%s] overall (OOF): AUC=%.3f PR-AUC=%.3f Brier=%.3f ECE=%.3f",
+             population, overall["auc"], overall["pr_auc"], overall["brier"], overall["ece"])
+    for g, s in strata.items():
+        if "auc" in s:
+            LOG.info("  [%s] ancestry %s (n=%d): AUC=%.3f cal_slope=%.2f ECE=%.3f",
+                     population, g, s["n"], s["auc"], s["cal_slope"], s["ece"])
+
+    imp = global_importance(model, X, spec["feature_cols"], meta["is_tree"], ev["shap_top_k"])
+    imp.to_csv(os.path.join(out, f"feature_importance{tag}.csv"), index=False)
+
+    _plot_calibration(y, oof, df[spec["ancestry_col"]].to_numpy(), ev["calibration_bins"],
+                      os.path.join(out, f"calibration{tag}.png"))
+    _plot_importance(imp, os.path.join(out, f"feature_importance{tag}.png"))
+
+    report = {"cancer": cfg["cancer"], "model": meta["model_name"], "population": population,
+              "best_params": meta.get("best_params", {}),
+              "overall": overall, "by_ancestry": strata,
+              "top_features": imp.to_dict("records")}
+    util.save_json(report, os.path.join(out, f"evaluation{tag}.json"))
+    return report
+
+
 def main():
     args = cli.base_parser("Evaluation").parse_args()
     cfg = cli.load(args)
@@ -157,8 +199,6 @@ def main():
     ev = cfg["evaluation"]
     spec = util.load_json(os.path.join(out, "feature_spec.json"))
 
-    meta = util.load_json(os.path.join(out, "model_metadata.json"))
-    model = joblib.load(os.path.join(out, "model.pkl"))
     df = pd.read_csv(os.path.join(out, "dataset_matched.csv"))
     df_full = pd.read_csv(os.path.join(out, "dataset_full.csv"))
 
@@ -170,29 +210,19 @@ def main():
     enr_df = (df_full[df_full[spec["cohort_col"]].isin(train_cohorts)].copy()
               if train_cohorts else df_full)
 
-    X = df[spec["feature_cols"]]
-    y = df[spec["label"]].astype(int).to_numpy()
-    groups = df[spec["group_col"]].to_numpy()
-    cv = get_cv("matched", cfg["model"]["cv_folds"], seed)
+    # PRIMARY: matched (propensity-matched) population.
+    report = evaluate_population(cfg, out, spec, "matched", df, seed, ev, tag="")
 
-    from sklearn.model_selection import cross_val_predict
-    oof = cross_val_predict(clone(model), X, y, cv=cv, groups=groups,
-                            method="predict_proba", n_jobs=-1)[:, 1]
-
-    overall = {"auc": float(roc_auc_score(y, oof)),
-               "pr_auc": float(average_precision_score(y, oof)),
-               "n": int(len(y)), "n_cases": int(y.sum())}
-    overall.update(calibration_stats(y, oof, ev["calibration_bins"]))
-    strata = stratified(y, oof, df[spec["ancestry_col"]].to_numpy(), ev["calibration_bins"])
-    LOG.info("overall (OOF): AUC=%.3f PR-AUC=%.3f Brier=%.3f ECE=%.3f",
-             overall["auc"], overall["pr_auc"], overall["brier"], overall["ece"])
-    for g, s in strata.items():
-        if "auc" in s:
-            LOG.info("  ancestry %s (n=%d): AUC=%.3f cal_slope=%.2f ECE=%.3f",
-                     g, s["n"], s["auc"], s["cal_slope"], s["ece"])
-
-    imp = global_importance(model, X, spec["feature_cols"], meta["is_tree"], ev["shap_top_k"])
-    imp.to_csv(os.path.join(out, "feature_importance.csv"), index=False)
+    # COMPARISON: full (unmatched, class-weighted) population, if train.py built it.
+    # Kept alongside the matched model because matching balances confounders, not
+    # prevalence -- the full model is the honest read on real-population calibration.
+    full_meta_path = os.path.join(out, "model_metadata_full.json")
+    if os.path.exists(full_meta_path):
+        report_full = evaluate_population(cfg, out, spec, "full", enr_df, seed, ev, tag="_full")
+    else:
+        report_full = None
+        LOG.info("no model_full.pkl found; skipping full-cohort comparison "
+                 "(run train.py --population both to enable it)")
 
     enr = carrier_enrichment(enr_df, cfg["genomics"]["panel"],
                              [cfg["genomics"]["aggregate_flag"], cfg["genomics"]["extra_aggregate"]],
@@ -207,16 +237,15 @@ def main():
         for k, v in xc.items():
             LOG.info("cross-cohort %s: AUC=%.3f PR-AUC=%.3f", k, v["auc"], v["pr_auc"])
 
-    # ---- plots ----
-    _plot_calibration(y, oof, df[spec["ancestry_col"]].to_numpy(), ev["calibration_bins"],
-                      os.path.join(out, "calibration.png"))
-    _plot_importance(imp, os.path.join(out, "feature_importance.png"))
-
-    report = {"cancer": cfg["cancer"], "model": meta["model_name"], "population": "matched",
-              "overall": overall, "by_ancestry": strata, "cross_cohort": xc,
-              "top_features": imp.to_dict("records"), "carrier_enrichment_top": top_enr}
+    report["cross_cohort"] = xc
+    report["carrier_enrichment_top"] = top_enr
+    if report_full is not None:
+        report["full_population_comparison"] = {
+            "auc": report_full["overall"]["auc"], "pr_auc": report_full["overall"]["pr_auc"],
+            "ece": report_full["overall"]["ece"], "n": report_full["overall"]["n"]}
     util.save_json(report, os.path.join(out, "evaluation.json"))
-    LOG.info("wrote evaluation.json, feature_importance.csv, carrier_enrichment.csv, PNGs -> %s", out)
+    msg = "wrote evaluation.json(+_full), feature_importance.csv(+_full), carrier_enrichment.csv, PNGs -> %s"
+    LOG.info(msg, out)
 
 
 def _plot_calibration(y, p, groups, bins, path):

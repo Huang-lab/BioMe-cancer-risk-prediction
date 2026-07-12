@@ -19,7 +19,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STAGES = ["preprocess", "phenotype", "match", "features",
-          "genomics", "build_dataset", "train", "evaluate", "external_validate"]
+          "genomics", "build_dataset", "train", "evaluate", "external_validate", "report"]
 
 
 def run(script, extra):
