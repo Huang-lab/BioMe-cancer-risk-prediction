@@ -8,10 +8,10 @@
 #BSUB -J crc_pipeline               # job name
 #BSUB -P acc_rg_huangk06            # <-- SET to your allocation account (acc_...)
 #BSUB -q premium                    # queue
-#BSUB -n 8                          # compute cores (single node)
+#BSUB -n 4                          # compute cores (single node; XGBoost uses these)
 #BSUB -R span[hosts=1]              # keep all cores on one host (shared-memory job)
-#BSUB -R rusage[mem=16000]          # MB per core (Order_results is ~6 GB / 55M rows)
-#BSUB -W 12:00                      # walltime HH:MM (pipeline takes minutes; generous)
+#BSUB -R rusage[mem=16000]          # MB per core -> 64 GB total (Order_results ~6 GB / 55M rows)
+#BSUB -W 24:00                      # walltime HH:MM (generous for 6 GB file + training)
 #BSUB -o %J.stdout                  # output log (%J = JobID)
 #BSUB -eo %J.stderr                 # error log
 #BSUB -L /bin/bash                  # initialize the execution environment

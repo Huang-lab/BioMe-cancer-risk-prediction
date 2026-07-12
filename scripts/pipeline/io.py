@@ -23,12 +23,12 @@ HEADER_MANIFEST = "Header_File.txt"
 CHUNK_ROWS = 1_000_000   # ~1M rows per chunk keeps peak memory flat on multi-GB files
 
 
-def _read_delimited(path: str, sep: str, header: bool = True, usecols=None) -> pd.DataFrame:
-    # EHR files are delimited plain text where " is LITERAL (e.g. 5'2" in SIG/notes):
-    # QUOTE_NONE stops pandas treating it as a quote char. Fast C engine + usecols
-    # (read only needed columns) keeps the huge labs/vitals files tractable;
-    # chunked reading keeps peak memory flat on multi-GB files (Order_results is
-    # ~6 GB / 55M rows on real BioMe); on_bad_lines='skip' drops rare ragged rows.
+def _read_delimited(path: str, sep: str, header: bool = True, usecols=None,
+                    postprocess=None) -> pd.DataFrame:
+    """Read a pipe/tab file with the fast C parser and QUOTE_NONE (literal quotes
+    are fine, e.g. 5'2" in SIG fields). For files > 512 MB, stream in chunks and
+    apply ``postprocess`` per-chunk (rename/filter/drop) BEFORE concatenating —
+    this keeps peak memory flat regardless of file size."""
     kw = dict(
         sep=sep, dtype=str,
         header=0 if header else None, usecols=usecols,
@@ -39,15 +39,20 @@ def _read_delimited(path: str, sep: str, header: bool = True, usecols=None) -> p
         size = os.path.getsize(path)
     except OSError:
         size = 0
-    if size < 512 * 1024 * 1024:                # < 512 MB: read at once
-        return pd.read_csv(path, **kw)
+    if size < 512 * 1024 * 1024:
+        raw = pd.read_csv(path, **kw)
+        return postprocess(raw) if postprocess is not None else raw
     LOG.info("reading %s (%.1f GB) in %d-row chunks", path, size / 1e9, CHUNK_ROWS)
-    parts = []
+    parts, read = [], 0
     for i, chunk in enumerate(pd.read_csv(path, chunksize=CHUNK_ROWS, **kw)):
+        read += len(chunk)
+        if postprocess is not None:
+            chunk = postprocess(chunk)
         parts.append(chunk)
         if (i + 1) % 10 == 0:
-            LOG.info("  %s: %d chunks read (%d rows so far)", os.path.basename(path),
-                     i + 1, sum(len(p) for p in parts))
+            kept = sum(len(p) for p in parts)
+            LOG.info("  %s: %d chunks (%d read, %d kept)",
+                     os.path.basename(path), i + 1, read, kept)
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
@@ -80,7 +85,8 @@ def load_header_manifest(ehr_dir: str, sep: str = "|",
 
 def read_ehr_table(cfg: dict, ehr_dir: str, table_key: str,
                    required: bool = False, id_override: str = None,
-                   header_cols: list[str] = None) -> Optional[pd.DataFrame]:
+                   header_cols: list[str] = None,
+                   row_filter: dict[str, set] = None) -> Optional[pd.DataFrame]:
     """Read one raw clinical table and return it with canonical column names.
 
     If ``header_cols`` is given (from a Header_File.txt manifest), the data file is
@@ -100,14 +106,34 @@ def read_ehr_table(cfg: dict, ehr_dir: str, table_key: str,
 
     if header_cols is not None:
         # headerless data + manifest names; read ONLY the columns we need (id at
-        # position 0 + the mapped feature columns) for speed/memory on huge files.
+        # position 0 + the mapped feature columns) and FILTER inside each chunk so
+        # multi-GB files (Order_results ~6 GB / 55M rows) drop to a few million
+        # relevant rows before anything is concatenated -> flat peak memory.
         names_full = [c.strip() for c in header_cols]
         wanted = {cfgmod.resolve(v) for v in spec.get("cols", {}).values()}
         keep = sorted({0} | {i for i, c in enumerate(names_full) if c in wanted})
         usenames = [names_full[i] if i < len(names_full) else f"col{i}" for i in keep]
-        raw = _read_delimited(path, sep, header=False, usecols=keep)
-        raw.columns = usenames[:raw.shape[1]]
-        id_raw = raw.columns[0]                           # position 0 is the patient id
+        rename = {}
+        for canon, raw_name in spec.get("cols", {}).items():
+            rename[cfgmod.resolve(raw_name)] = canon
+        # rename is applied per-chunk so row_filter (by canonical col) works cheaply.
+
+        def _prep(chunk: pd.DataFrame) -> pd.DataFrame:
+            chunk.columns = usenames[:chunk.shape[1]]
+            id_raw_local = chunk.columns[0]
+            present = {id_raw_local: "ehr_id"}
+            for k, v in rename.items():
+                if k in chunk.columns:
+                    present[k] = v
+            chunk = chunk[list(present)].rename(columns=present)
+            if row_filter:
+                for col, allowed in row_filter.items():
+                    if col in chunk.columns:
+                        chunk = chunk[
+                            chunk[col].astype(str).str.strip().str.lower().isin(allowed)]
+            return chunk
+
+        return _read_delimited(path, sep, header=False, usecols=keep, postprocess=_prep)
     elif not spec.get("header", True):
         # legacy positional (headerless, explicit indices)
         raw = _read_delimited(path, sep, header=False)
