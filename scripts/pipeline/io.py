@@ -20,20 +20,22 @@ LOG = util.get_logger("io")
 HEADER_MANIFEST = "Header_File.txt"
 
 
-def _read_delimited(path: str, sep: str, header: bool = True) -> pd.DataFrame:
+def _read_delimited(path: str, sep: str, header: bool = True, usecols=None) -> pd.DataFrame:
     # EHR files are delimited plain text where " is LITERAL (e.g. 5'2" in SIG/notes):
-    # QUOTE_NONE stops pandas treating it as a quote char. on_bad_lines="warn" skips
-    # the occasional ragged row instead of aborting the whole run.
+    # QUOTE_NONE stops pandas treating it as a quote char. Fast C engine + usecols
+    # (read only needed columns) keeps the huge labs/vitals files tractable;
+    # on_bad_lines="skip" drops the occasional ragged row instead of aborting.
     return pd.read_csv(
         path,
         sep=sep,
         dtype=str,
         header=0 if header else None,
+        usecols=usecols,
         keep_default_na=True,
         na_values=["", "NA", "NaN", "null", "."],
-        engine="python",
+        engine="c",
         quoting=csv.QUOTE_NONE,
-        on_bad_lines="warn",
+        on_bad_lines="skip",
     )
 
 
@@ -85,12 +87,14 @@ def read_ehr_table(cfg: dict, ehr_dir: str, table_key: str,
     sep = spec.get("sep", "\t")
 
     if header_cols is not None:
-        raw = _read_delimited(path, sep, header=False)
-        names = [c.strip() for c in header_cols]
-        w = raw.shape[1]
-        if len(names) < w:                                # data wider than manifest
-            names = names + [f"col{i}" for i in range(len(names), w)]
-        raw.columns = names[:w]
+        # headerless data + manifest names; read ONLY the columns we need (id at
+        # position 0 + the mapped feature columns) for speed/memory on huge files.
+        names_full = [c.strip() for c in header_cols]
+        wanted = {cfgmod.resolve(v) for v in spec.get("cols", {}).values()}
+        keep = sorted({0} | {i for i, c in enumerate(names_full) if c in wanted})
+        usenames = [names_full[i] if i < len(names_full) else f"col{i}" for i in keep]
+        raw = _read_delimited(path, sep, header=False, usecols=keep)
+        raw.columns = usenames[:raw.shape[1]]
         id_raw = raw.columns[0]                           # position 0 is the patient id
     elif not spec.get("header", True):
         # legacy positional (headerless, explicit indices)
