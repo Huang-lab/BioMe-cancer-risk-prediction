@@ -20,7 +20,22 @@ and checks the guesses against them:
 Read-only: it never touches dataset/model files and can be re-run as often as
 you like before deciding whether anything needs to change.
 
+CAVEAT this script's default mode does NOT catch on its own: preprocess.py
+pre-filters vitals/labs rows to config's *already-guessed* name/analyte
+values INSIDE the chunked raw-file reader (to keep multi-GB files tractable
+-- see build_row_filters() in preprocess.py), so the interim CSVs this script
+reads by default can only ever contain rows that already matched a guess.
+A vital/lab name that was never listed in feature_maps at all is invisible
+here, not just "zero matches" -- it was dropped before interim was written.
+Pass --raw to also re-read the RAW files directly (bypassing that filter,
+same chunked reader preprocess.py uses) and list real values NOT covered by
+any configured label. That pass touches the same multi-GB files preprocess.py
+does, so it can take a few minutes on real Order_results/Vitals files --
+default mode is instant and fine for everything except "did we miss a whole
+vital/lab name."
+
   python scripts/audit_feature_maps.py --config config/crc.yaml
+  python scripts/audit_feature_maps.py --config config/crc.yaml --raw
   python scripts/audit_feature_maps.py --config config/crc.yaml --data-root tests/synthetic
 """
 from __future__ import annotations
@@ -31,7 +46,8 @@ import sys
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pipeline import cli, codes, data, util  # noqa: E402
+from pipeline import cli, codes, config as cfgmod, data, io, util  # noqa: E402
+import preprocess as pp  # sibling stage script; reuse its raw-file plumbing  # noqa: E402
 
 LOG = util.get_logger("audit_feature_maps")
 
@@ -72,6 +88,45 @@ def audit_category_column(lines, df, col, unit_col, label_map, table_name, top_n
             _emit(lines, f"  '{key}' {labels} real '{unit_col}' distribution: {uc.to_dict()}")
 
 
+def raw_uncovered_values(lines, cfg, cohort_cfg, table_key, col, label_map, top_n=30):
+    """Re-read the RAW file directly (bypassing preprocess.py's own value-guess
+    row filter) so we can see category strings that were never guessed at all --
+    the interim CSVs only ever contain rows that already matched a guess."""
+    ehr_dir = cfgmod.resolve_path(cfg, cohort_cfg["ehr_dir"])
+    if not os.path.isdir(ehr_dir):
+        _emit(lines, f"  (raw ehr_dir not found: {ehr_dir})")
+        return
+    manifest = io.load_header_manifest(ehr_dir)
+    file_prefix = cohort_cfg.get("file_prefix", "")
+    spec = cfg["ehr_tables"][table_key]
+    header_cols = manifest.get(file_prefix + spec["file"]) or manifest.get(spec["file"])
+    cohort_ids = pp.cohort_patient_ids(cfg, cohort_cfg)  # patient scope only, no value filter
+    row_filter = {"ehr_id": cohort_ids} if cohort_ids else None
+    lc_override = None if cohort_cfg.get("has_cohort_tag", True) else 0
+
+    df = io.read_ehr_table(cfg, ehr_dir, table_key, required=False,
+                           id_override=cohort_cfg.get("clinical_id_col"),
+                           header_cols=header_cols, row_filter=row_filter,
+                           file_prefix=file_prefix, leading_cols_override=lc_override)
+    if df is None or df.empty or col not in df.columns:
+        _emit(lines, f"  (raw {table_key}: no data / no '{col}' column)")
+        return
+
+    vals = df[col].astype(str).str.strip()
+    vc = vals.value_counts()
+    all_labels = {lab.lower() for labs in label_map.values() for lab in labs}
+    uncovered = vc[~vc.index.str.lower().isin(all_labels)]
+    _emit(lines, f"  RAW {table_key} scan (bypasses the config-guess pre-filter): "
+                 f"{len(df)} rows, {len(vc)} distinct '{col}' values")
+    if uncovered.empty:
+        _emit(lines, f"  every real {table_key} '{col}' value is already covered by feature_maps.")
+    else:
+        _emit(lines, f"  ! top {top_n} REAL {table_key} '{col}' values NOT in any feature_maps "
+                     f"label (possible missed signal or unmapped synonym):")
+        for v, c in uncovered.head(top_n).items():
+            _emit(lines, f"    {c:>8}  {v}")
+
+
 def audit_icd(lines, dxw, prefixes_by_key, n_subjects):
     if dxw is None or dxw.empty:
         _emit(lines, "  (no diagnosis rows to check)")
@@ -92,10 +147,16 @@ def audit_icd(lines, dxw, prefixes_by_key, n_subjects):
 
 
 def main():
-    args = cli.base_parser("Audit feature_maps guesses against real interim data").parse_args()
+    ap = cli.base_parser("Audit feature_maps guesses against real interim data")
+    ap.add_argument("--raw", action="store_true",
+                    help="also re-scan the RAW vitals/labs files (bypassing preprocess.py's "
+                         "config-guess row filter) for name/analyte values never mapped at "
+                         "all -- slower (touches the same multi-GB files preprocess.py does)")
+    args = ap.parse_args()
     cfg = cli.load(args)
     out = cli.out_root(cfg)
     fm = cfg["feature_maps"]
+    cohort_cfgs = {c["name"]: c for c in cfg["cohorts"]}
 
     pheno = pd.read_csv(os.path.join(out, "phenotype.csv"))
     cohorts = pheno["cohort"].unique().tolist()
@@ -109,10 +170,14 @@ def main():
         lines.append("### vitals")
         audit_category_column(lines, data.load_tidy(out, cohort, "vitals"),
                               "name", "unit", fm["vital_signs"], "vitals")
+        if args.raw and cohort in cohort_cfgs:
+            raw_uncovered_values(lines, cfg, cohort_cfgs[cohort], "vitals", "name", fm["vital_signs"])
 
         lines.append("\n### labs")
         audit_category_column(lines, data.load_tidy(out, cohort, "labs"),
                               "analyte", "units", fm["lab_analytes"], "labs")
+        if args.raw and cohort in cohort_cfgs:
+            raw_uncovered_values(lines, cfg, cohort_cfgs[cohort], "labs", "analyte", fm["lab_analytes"])
 
         dx_tables = [data.load_tidy(out, cohort, t)
                     for t in ("enc_diagnosis", "problem_list", "medical_hx")]
