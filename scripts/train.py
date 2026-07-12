@@ -71,6 +71,7 @@ def train_population(cfg, df, spec, population, out):
     n_splits = mcfg["cv_folds"]
 
     best = None  # (score, name, fitted_search)
+    failures = []
     for name in mcfg["candidates"]:
         est, params = modeling.candidate(name, class_weight, spw, seed)
         if est is None:
@@ -80,11 +81,23 @@ def train_population(cfg, df, spec, population, out):
         search = RandomizedSearchCV(
             pipe, params, n_iter=mcfg["search_iters"], scoring="average_precision",
             cv=cv, random_state=seed, n_jobs=-1, error_score="raise", refit=True)
-        search.fit(X, y, groups=groups)
+        try:
+            search.fit(X, y, groups=groups)
+        except Exception as e:
+            # library-version incompatibilities / candidate-specific errors -> log
+            # + skip so the whole run doesn't die when one model can't fit.
+            msg = str(e).splitlines()[0][:180]
+            LOG.warning("  [%s] %s failed (%s: %s); skipping candidate",
+                        population, name, type(e).__name__, msg)
+            failures.append((name, msg))
+            continue
         LOG.info("  [%s] %s CV PR-AUC=%.3f", population, name, search.best_score_)
         if best is None or search.best_score_ > best[0]:
             best = (search.best_score_, name, search)
 
+    if best is None:
+        raise RuntimeError(
+            f"[{population}] no candidate model fit successfully. Failures: {failures}")
     score, name, search = best
     LOG.info("[%s] selected %s (CV PR-AUC=%.3f)", population, name, score)
 

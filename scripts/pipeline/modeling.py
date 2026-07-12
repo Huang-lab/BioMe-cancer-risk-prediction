@@ -16,6 +16,26 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 try:
     from xgboost import XGBClassifier
     HAS_XGB = True
+    # sklearn >= 1.6 uses __sklearn_tags__ for is_classifier(); xgboost < 2.1 doesn't
+    # provide it -> "Got a regressor with response_method=predict_proba". Add a
+    # minimal shim (best-effort; if the Tags API differs, the pipeline still
+    # gracefully skips this candidate via train.py's try/except).
+    if not hasattr(XGBClassifier, "__sklearn_tags__"):
+        try:                                                            # noqa: SIM105
+            from sklearn.utils._tags import (
+                ClassifierTags, InputTags, Tags, TargetTags,
+            )
+
+            def _xgb_tags(self):
+                return Tags(
+                    estimator_type="classifier",
+                    classifier_tags=ClassifierTags(),
+                    target_tags=TargetTags(required=True),
+                    input_tags=InputTags(),
+                )
+            XGBClassifier.__sklearn_tags__ = _xgb_tags
+        except Exception:
+            pass
 except Exception:  # pragma: no cover
     HAS_XGB = False
 

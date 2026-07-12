@@ -105,13 +105,19 @@ def read_ehr_table(cfg: dict, ehr_dir: str, table_key: str,
     sep = spec.get("sep", "\t")
 
     if header_cols is not None:
-        # headerless data + manifest names; read ONLY the columns we need (id at
-        # position 0 + the mapped feature columns) and FILTER inside each chunk so
-        # multi-GB files (Order_results ~6 GB / 55M rows) drop to a few million
-        # relevant rows before anything is concatenated -> flat peak memory.
-        names_full = [c.strip() for c in header_cols]
+        # headerless data + manifest names; read ONLY the columns we need and FILTER
+        # inside each chunk so multi-GB files stay tractable.
+        #
+        # `leading_cols`: some raw files carry N extra UNDOCUMENTED leading columns
+        # NOT present in Header_File.txt (BioMe files have a leading `cohort` tag
+        # in 8/12 tables). Without this offset, manifest names would be applied at
+        # position 0 and the patient id would be captured from the wrong column
+        # (silently zeroing every join). With `lead=N`, real data begins at column
+        # N and manifest names[0] is the patient id.
+        lead = int(spec.get("leading_cols", 0))
+        names_full = [f"__lead{i}__" for i in range(lead)] + [c.strip() for c in header_cols]
         wanted = {cfgmod.resolve(v) for v in spec.get("cols", {}).values()}
-        keep = sorted({0} | {i for i, c in enumerate(names_full) if c in wanted})
+        keep = sorted({lead} | {i for i, c in enumerate(names_full) if c in wanted})
         usenames = [names_full[i] if i < len(names_full) else f"col{i}" for i in keep]
         rename = {}
         for canon, raw_name in spec.get("cols", {}).items():

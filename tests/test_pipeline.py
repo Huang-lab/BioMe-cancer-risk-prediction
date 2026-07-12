@@ -109,6 +109,28 @@ def test_header_manifest_and_headerless_read(tmp_path):
     assert df.iloc[1]["sex"] == "M"
 
 
+def test_leading_cols_offsets_id_position(tmp_path):
+    """Real BioMe files carry an undocumented leading `cohort` tag NOT in the
+    manifest; leading_cols must shift the id column to the correct position so the
+    patient key isn't misread as 'Regeneron'/'Sema4'."""
+    from pipeline import io
+    ehr = tmp_path
+    (ehr / "Header_File.txt").write_text(
+        "-- Social_History.txt\n\nrgnid|TOBACCO_USER|YEARS_EDUCATION\n\n")
+    # data has an UNDOCUMENTED leading cohort col BEFORE the manifest names
+    (ehr / "Social_History.txt").write_text(
+        "Regeneron|SINAI_1_AB|Never|16\nRegeneron|SINAI_2_CD|Current|12\n")
+    cfg = {"ehr_tables": {"social": {
+        "file": "Social_History.txt", "sep": "|", "leading_cols": 1,
+        "cols": {"smoking": "TOBACCO_USER", "years_education": "YEARS_EDUCATION"}}}}
+    manifest = io.load_header_manifest(str(ehr))
+    df = io.read_ehr_table(cfg, str(ehr), "social",
+                           header_cols=manifest["Social_History.txt"])
+    assert df.iloc[0]["ehr_id"] == "SINAI_1_AB"           # NOT "Regeneron"
+    assert df.iloc[0]["smoking"] == "Never"
+    assert df.iloc[1]["years_education"] == "12"
+
+
 def test_headerless_read_tolerates_literal_quotes(tmp_path):
     """EHR text fields can contain a literal " (e.g. a height 5'2\") — must not break parsing."""
     from pipeline import io

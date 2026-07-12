@@ -102,6 +102,7 @@ ehr_tables:
     file: Encounter_Diagnosis.txt
     sep: "|"
     id_col: sem_id
+    leading_cols: 1                   # data has an undocumented leading cohort tag
     cols:
       icd_code:  dx_code1
       code_type: dx_code_type
@@ -132,6 +133,7 @@ ehr_tables:
     file: Social_History.txt
     sep: "|"
     id_col: sem_id
+    leading_cols: 1                   # data has an undocumented leading cohort tag
     cols:
       smoking:         TOBACCO_USER
       alcohol:         IS_ALCOHOL_USER
@@ -141,6 +143,7 @@ ehr_tables:
     file: Family_History.txt
     sep: "|"
     id_col: sem_id
+    leading_cols: 1                   # data has an undocumented leading cohort tag
     cols:
       relation:  relation_c
       condition: problem_description
@@ -149,6 +152,7 @@ ehr_tables:
     file: Medical_History.txt
     sep: "|"
     id_col: sem_id
+    leading_cols: 1                   # data has an undocumented leading cohort tag
     cols:
       icd_code:  ICD9_CODE
       code_type: CODE_TYPE
@@ -158,6 +162,7 @@ ehr_tables:
     file: Surgical_History.txt
     sep: "|"
     id_col: sem_id
+    leading_cols: 1                   # data has an undocumented leading cohort tag
     cols:
       procedure: procedure_name
       text:      surgical_hx_description
@@ -166,6 +171,7 @@ ehr_tables:
     file: Medications.txt
     sep: "|"
     id_col: sem_id
+    leading_cols: 1                   # data has an undocumented leading cohort tag
     cols:
       name: DESCRIPTION
       date: ordering_date
@@ -173,6 +179,7 @@ ehr_tables:
     file: HEALTH_MAINTENANCE_HISTORY.txt
     sep: "|"
     id_col: sem_id
+    leading_cols: 1                   # data has an undocumented leading cohort tag
     cols:
       topic: hm_topic_name
       date:  entry_date
@@ -182,6 +189,7 @@ ehr_tables:
     file: Questionnaire.txt
     sep: "|"
     id_col: sem_id
+    leading_cols: 1                   # data has an undocumented leading cohort tag
     cols:
       year_of_birth:       YEAR_OF_BIRTH        # -> age_at_index (no DOB in Demographics)
       country_of_birth:    COUNTRY_OF_BIRTH

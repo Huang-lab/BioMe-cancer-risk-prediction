@@ -135,9 +135,18 @@ def gen_clinical(cfg, patients, ehr_dir, rng):
 
     def emit(df, table):
         """Write a table HEADERLESS and record its columns in the manifest,
-        mirroring the real BRSPD layout (data files headerless + Header_File.txt)."""
-        manifest[tables[table]["file"]] = [str(c) for c in df.columns]
-        _write(df, path(table), sep(table), header=False)
+        mirroring the real BRSPD layout (data files headerless + Header_File.txt).
+        If the table's config declares `leading_cols`, INJECT that many
+        undocumented leading columns (e.g. cohort tag) so the leading_cols path
+        is exercised end-to-end — this reproduces the real-Regen bug on synthetic."""
+        cols = [str(c) for c in df.columns]
+        lead = int(tables[table].get("leading_cols", 0))
+        out = df.copy()
+        for i in range(lead):
+            out.insert(i, f"__cohort_tag_{i}__", "Regeneron")
+        # manifest only records the DOCUMENTED (post-leading) columns
+        manifest[tables[table]["file"]] = cols
+        _write(out, path(table), sep(table), header=False)
 
     # demographics (one row/patient)
     t = "demographics"
