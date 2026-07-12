@@ -116,6 +116,7 @@ ehr_tables:
       name:  vital_sign_description
       value: vital_sign_measurement
       date:  date_of_assessment
+      unit:  vital_sign_unit_of_measure
   labs:                              # LONG format
     file: Order_results.txt
     sep: "|"
@@ -298,20 +299,21 @@ features:
 # to confirm against the data. features.py matches case-insensitively.
 # ---------------------------------------------------------------------
 feature_maps:
-  vital_signs:                        # vital_sign_description -> feature
-    bmi:    ["BMI", "Body Mass Index"]
-    height: ["Height"]
-    weight: ["Weight"]
-    sbp:    ["BP Systolic", "Systolic Blood Pressure", "Systolic"]
-    dbp:    ["BP Diastolic", "Diastolic Blood Pressure", "Diastolic"]
-  lab_analytes:                       # component_name -> feature
-    wbc:            ["WBC", "White Blood Cell Count"]
-    hemoglobin:     ["Hemoglobin", "HGB"]
-    platelet_count: ["Platelet", "Platelet Count", "PLT"]
-    creatinine:     ["Creatinine"]
-    alt:            ["ALT", "Alanine Aminotransferase"]
-    ast:            ["AST", "Aspartate Aminotransferase"]
-    cea:            ["CEA", "Carcinoembryonic Antigen"]
+  vital_signs:                        # real BioMe vital_sign_description values
+    height: ["HEIGHT"]
+    weight: ["WEIGHT/SCALE"]
+    bp:     ["BP"]                     # combined "systolic/diastolic" string -> split
+  vitals_units:                       # HEIGHT|INCHES confirmed; confirm weight unit
+    height: in                        # in | cm
+    weight: oz                        # oz | lb | kg  (Epic WEIGHT/SCALE is often ounces)
+  lab_analytes:                       # EXACT (case-insensitive) component_name values
+    wbc:            ["WBC", "WHITE BLOOD CELL", "WHITE BLOOD CELLS"]
+    hemoglobin:     ["HGB", "HGB, WB", "HEMOGLOBIN , VEN"]
+    platelet_count: ["PLATELET COUNT", "PLATELETS", "PLATELET"]
+    creatinine:     ["CREATININE", "CREATININE, SERUM", "WB CREATININE, VEN"]
+    alt:            ["ALT", "ALT (SGPT)", "ALT(SGPT)"]
+    ast:            ["AST", "AST (SGOT)"]
+    cea:            ["CEA", "CARCINOEMBRYONIC AG"]
   medications:
     aspirin: ["aspirin"]
     nsaid:   ["ibuprofen", "naproxen", "nsaid", "celecoxib", "diclofenac"]

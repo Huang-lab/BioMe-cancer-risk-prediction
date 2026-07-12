@@ -13,8 +13,10 @@ import pandas as pd
 from . import util
 
 DATE_KEYS = {"date", "birth_date", "last_done", "next_due", "measure_date", "outcome_date"}
-NUMERIC_KEYS = {"value", "bmi", "height", "weight", "sbp", "dbp", "years_education",
-                "parity", "age_at_menarche", "age_at_first_birth", "year_of_birth"}
+# NB: 'value' is NOT coerced here — vitals BP is a "120/80" string; labs/vitals
+# numeric coercion happens per-feature in features._long_agg.
+NUMERIC_KEYS = {"years_education", "parity", "age_at_menarche",
+                "age_at_first_birth", "year_of_birth"}
 
 
 def clean_table(df: pd.DataFrame) -> pd.DataFrame:

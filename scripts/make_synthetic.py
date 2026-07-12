@@ -198,17 +198,18 @@ def gen_clinical(cfg, patients, ehr_dir, rng):
             if rng.random() < 0.25:
                 prob.append((eid, code, "ICD-10", name, _d(idx - pd.Timedelta(days=int(rng.integers(200, 1500))))))
 
-        # vitals (LONG): BMI, Weight, BP Systolic, BP Diastolic
+        # vitals (LONG, real BioMe labels): HEIGHT (inches), WEIGHT/SCALE (oz), BP ("sys/dia")
+        height_in = round(float(rng.normal(67, 4)), 1)
         for d in _window_dates(rng, idx, 5):
-            bmi = round(float(rng.normal(28, 5)), 1)
-            for vname, val in (("BMI", bmi), ("Weight", round(float(rng.normal(80, 15)), 1)),
-                               ("BP Systolic", int(rng.normal(130, 15))),
-                               ("BP Diastolic", int(rng.normal(80, 10)))):
-                vit_rows.append((eid, vname, val, _d(d)))
+            wt_oz = int(rng.normal(190, 35) * 16)
+            sbp, dbp = int(rng.normal(130, 15)), int(rng.normal(80, 10))
+            vit_rows.append((eid, "HEIGHT", height_in, _d(d), "INCHES"))
+            vit_rows.append((eid, "WEIGHT/SCALE", wt_oz, _d(d), "oz"))
+            vit_rows.append((eid, "BP", f"{sbp}/{dbp}", _d(d), "Blood Pressure"))
 
-        # labs (LONG)
-        analytes = {"WBC": (6.5, 2), "Hemoglobin": (13.5, 1.5), "Platelet Count": (250, 60),
-                    "Creatinine": (0.9, 0.2), "ALT": (25, 10), "AST": (22, 9)}
+        # labs (LONG) — component_name values matching feature_maps.lab_analytes
+        analytes = {"WBC": (6.5, 2), "HGB": (13.5, 1.5), "PLATELET COUNT": (250, 60),
+                    "CREATININE": (0.9, 0.2), "ALT": (25, 10), "AST": (22, 9)}
         for name, (mu, sd) in analytes.items():
             for d in _window_dates(rng, idx, 3):
                 lab_rows.append((eid, _d(d), name, round(float(rng.normal(mu, sd)), 1), "u", "N"))
@@ -247,7 +248,8 @@ def gen_clinical(cfg, patients, ehr_dir, rng):
 
     # vitals (LONG)
     t = "vitals"
-    emit(pd.DataFrame(vit_rows, columns=[idn(t), raw(t, "name"), raw(t, "value"), raw(t, "date")]), t)
+    emit(pd.DataFrame(vit_rows, columns=[idn(t), raw(t, "name"), raw(t, "value"),
+                                         raw(t, "date"), raw(t, "unit")]), t)
     # labs (LONG)
     t = "labs"
     emit(pd.DataFrame(lab_rows, columns=[idn(t), raw(t, "date"), raw(t, "analyte"),

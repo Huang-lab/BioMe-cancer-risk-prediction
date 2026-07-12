@@ -42,15 +42,19 @@ def _slope_per_year(g):
 
 
 def _long_agg(win_df, name_col, labels):
-    """From a long table, return (last, mean, slope) value Series for rows whose
-    name_col matches any label (case-insensitive). None if no matching rows."""
+    """From a long table, return (last, mean, slope) numeric-value Series for rows
+    whose name_col EXACTLY matches any label (case-insensitive). None if no rows.
+    Coerces value to numeric here (tidy tables keep raw strings so BP survives)."""
     if win_df is None or win_df.empty or name_col not in win_df.columns:
         return None
     labels_l = [s.lower() for s in labels]
-    sub = win_df[win_df[name_col].astype(str).str.lower().isin(labels_l)].copy()
+    sub = win_df[win_df[name_col].astype(str).str.strip().str.lower().isin(labels_l)].copy()
     if sub.empty:
         return None
-    sub = sub.sort_values("date")
+    sub["value"] = pd.to_numeric(sub["value"], errors="coerce")
+    sub = sub.dropna(subset=["value"]).sort_values("date")
+    if sub.empty:
+        return None
     return (sub.groupby("ehr_id")["value"].last(),
             sub.groupby("ehr_id")["value"].mean(),
             sub.groupby("ehr_id").apply(_slope_per_year, include_groups=False))
@@ -72,25 +76,55 @@ def lab_features(cfg, out, cohort_tables, win, feats):
             feats["hemoglobin_slope"] = feats.index.map(slope)
 
 
+def _to_lb(series, unit):
+    unit = (unit or "lb").lower()
+    if unit == "oz":
+        return series / 16.0
+    if unit == "kg":
+        return series * 2.20462
+    return series  # lb
+
+
 def vitals_features(cfg, cohort_tables, win, feats, th):
-    vmap = cfg["feature_maps"]["vital_signs"]
-    win_vit = _windowed(cohort_tables.get("vitals"), win)  # LONG: name/value/date
-    for c in ("bmi_last", "sbp_last", "dbp_last", "bmi_slope", "weight_loss_velocity"):
+    """Real BioMe vitals are long-format with HEIGHT (in), WEIGHT/SCALE, and a
+    combined BP ('sys/dia'); BMI is COMPUTED (703*lb/in^2), BP is SPLIT."""
+    fm = cfg["feature_maps"]
+    vmap = fm["vital_signs"]
+    units = fm.get("vitals_units", {})
+    win_vit = _windowed(cohort_tables.get("vitals"), win)
+    for c in ("bmi_last", "sbp_last", "dbp_last", "bmi_slope",
+              "weight_loss_velocity", "height_last", "weight_last"):
         feats[c] = np.nan
-    for vital, labels in vmap.items():
-        agg = _long_agg(win_vit, "name", labels)
-        if agg is None:
-            continue
-        last, _mean, slope = agg
-        if vital == "bmi":
-            feats["bmi_last"] = feats.index.map(last)
-            feats["bmi_slope"] = feats.index.map(slope)
-        elif vital == "sbp":
-            feats["sbp_last"] = feats.index.map(last)
-        elif vital == "dbp":
-            feats["dbp_last"] = feats.index.map(last)
-        elif vital == "weight":
-            feats["weight_loss_velocity"] = feats.index.map(slope)
+    if win_vit is None or win_vit.empty:
+        return
+
+    h = _long_agg(win_vit, "name", vmap.get("height", []))
+    w = _long_agg(win_vit, "name", vmap.get("weight", []))
+    if h is not None:
+        feats["height_last"] = feats.index.map(h[0])
+    if w is not None:
+        feats["weight_last"] = feats.index.map(w[0])
+        feats["weight_loss_velocity"] = feats.index.map(_to_lb(w[2], units.get("weight")))
+
+    ht_in = pd.to_numeric(feats["height_last"], errors="coerce")
+    if units.get("height") == "cm":
+        ht_in = ht_in / 2.54
+    wt_lb = _to_lb(pd.to_numeric(feats["weight_last"], errors="coerce"), units.get("weight"))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        feats["bmi_last"] = 703.0 * wt_lb / (ht_in ** 2)
+        feats["bmi_slope"] = 703.0 * pd.to_numeric(feats["weight_loss_velocity"],
+                                                   errors="coerce") / (ht_in ** 2)
+
+    # blood pressure: value like "120/80" -> split; last in window
+    bp_labels = [s.lower() for s in vmap.get("bp", [])]
+    bp = win_vit[win_vit["name"].astype(str).str.strip().str.lower().isin(bp_labels)].copy()
+    if not bp.empty:
+        bp = bp.sort_values("date")
+        last_bp = bp.groupby("ehr_id")["value"].last().astype(str)
+        feats["sbp_last"] = pd.to_numeric(
+            feats.index.map(last_bp.str.extract(r"(\d+)\s*/\s*\d+")[0]), errors="coerce")
+        feats["dbp_last"] = pd.to_numeric(
+            feats.index.map(last_bp.str.extract(r"\d+\s*/\s*(\d+)")[0]), errors="coerce")
 
 
 def icd_flag(win_df, prefixes):
