@@ -27,6 +27,28 @@ COHORT_TAGS = {
 }
 
 
+def cohort_patient_ids(cfg: dict, cohort: dict) -> set[str] | None:
+    """Return the set of case+control SINAI ids for a cohort (lowercased for
+    case-insensitive matching in the chunked reader). None if roster is missing —
+    downstream tables then read all rows as before.
+
+    Reading the roster FIRST lets preprocess filter each clinical file to just
+    the modeling cohort, shrinking interim CSVs ~5-10x on real BioMe (~15k
+    case+control patients vs. tens of thousands of total BRSPD patients)."""
+    roster_path = cfgmod.resolve_path(cfg, cohort["roster"])
+    if not os.path.exists(roster_path):
+        LOG.warning("cohort %s: roster %s missing; no patient-id filter applied",
+                    cohort["name"], roster_path)
+        return None
+    roster_df, _ = io.read_roster(cfg, roster_path)
+    case_labels = set(cfgmod.resolve(cfg["roster"]["case_labels"]))
+    control_label = cfg["roster"]["control_label"]
+    keep = case_labels | {control_label}
+    if cfg["roster"].get("drop_other_groups", True):
+        roster_df = roster_df[roster_df["group"].astype(str).str.strip().isin(keep)]
+    return set(roster_df["ehr_id"].astype(str).str.strip().str.lower())
+
+
 def build_row_filters(cfg: dict) -> dict[str, dict[str, set]]:
     """For huge long-format tables, restrict rows to the target analyte/vital/topic
     values. Applied INSIDE the chunked reader so multi-GB files stay tractable.
@@ -75,6 +97,15 @@ def main():
         # manifest keys are the file names as they appear in Header_File.txt.
         # For Sema4 those already start with 'Sema4_'; for Regen they don't.
         row_filters = build_row_filters(cfg)
+        # Restrict every clinical file to just this cohort's case+control patient
+        # ids so interim CSVs cover only the modeling cohort (~15k) rather than
+        # all BRSPD patients.
+        cohort_ids = cohort_patient_ids(cfg, cohort)
+        if cohort_ids:
+            LOG.info("cohort %s: filtering all tables to %d roster patient ids",
+                     name, len(cohort_ids))
+            for tk in cfg["ehr_tables"]:
+                row_filters.setdefault(tk, {})["ehr_id"] = cohort_ids
         if row_filters:
             LOG.info("cohort %s: applying per-chunk row filters on %s",
                      name, list(row_filters))
