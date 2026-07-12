@@ -13,6 +13,10 @@ from typing import Optional
 import pandas as pd
 
 from . import config as cfgmod
+from . import util
+
+LOG = util.get_logger("io")
+HEADER_MANIFEST = "Header_File.txt"
 
 
 def _read_delimited(path: str, sep: str, header: bool = True) -> pd.DataFrame:
@@ -27,12 +31,43 @@ def _read_delimited(path: str, sep: str, header: bool = True) -> pd.DataFrame:
     )
 
 
+def load_header_manifest(ehr_dir: str, sep: str = "|",
+                         filename: str = HEADER_MANIFEST) -> dict[str, list[str]]:
+    """Parse a BRSPD Header_File.txt manifest -> {data_filename: [column names]}.
+
+    Format (sections):
+        -- Demographics.txt
+        rgnid|gender|ethnic_group_c|...
+    Returns {} if no manifest is present (files then assumed to carry inline headers).
+    """
+    path = os.path.join(ehr_dir, filename)
+    if not os.path.exists(path):
+        return {}
+    manifest: dict[str, list[str]] = {}
+    current = None
+    with open(path) as fh:
+        for line in fh:
+            s = line.strip()
+            if not s:
+                continue
+            if s.startswith("--"):
+                current = s.lstrip("-").strip()          # "Demographics.txt"
+            elif current and sep in s:
+                manifest[current] = [c.strip() for c in s.split(sep)]
+                current = None
+    return manifest
+
+
 def read_ehr_table(cfg: dict, ehr_dir: str, table_key: str,
-                   required: bool = False, id_override: str = None) -> Optional[pd.DataFrame]:
+                   required: bool = False, id_override: str = None,
+                   header_cols: list[str] = None) -> Optional[pd.DataFrame]:
     """Read one raw clinical table and return it with canonical column names.
 
-    ``id_override`` (e.g. a cohort's clinical_id_col) replaces the table id column.
-    Returns None if the file is absent and ``required`` is False.
+    If ``header_cols`` is given (from a Header_File.txt manifest), the data file is
+    read HEADERLESS and those names are assigned (column 0 = patient id). Otherwise
+    the file is assumed to carry an inline header. Missing optional columns are
+    warned about and skipped (real files carry extra columns and some vary); only
+    the patient id column is required. Returns None if the file is absent.
     """
     spec = cfg["ehr_tables"][table_key]
     path = os.path.join(ehr_dir, spec["file"])
@@ -42,30 +77,38 @@ def read_ehr_table(cfg: dict, ehr_dir: str, table_key: str,
         return None
 
     sep = spec.get("sep", "\t")
-    has_header = spec.get("header", True)
 
-    if not has_header:
-        # positional file (headerless, delimited)
+    if header_cols is not None:
         raw = _read_delimited(path, sep, header=False)
-        out = pd.DataFrame()
-        out["ehr_id"] = raw.iloc[:, spec["id_col_idx"]]
+        names = [c.strip() for c in header_cols]
+        w = raw.shape[1]
+        if len(names) < w:                                # data wider than manifest
+            names = names + [f"col{i}" for i in range(len(names), w)]
+        raw.columns = names[:w]
+        id_raw = raw.columns[0]                           # position 0 is the patient id
+    elif not spec.get("header", True):
+        # legacy positional (headerless, explicit indices)
+        raw = _read_delimited(path, sep, header=False)
+        out = pd.DataFrame({"ehr_id": raw.iloc[:, spec["id_col_idx"]]})
         for canon, idx in spec.get("cols_idx", {}).items():
             out[canon] = raw.iloc[:, idx]
         return out
+    else:
+        raw = _read_delimited(path, sep, header=True)
+        raw.columns = [c.strip() for c in raw.columns]
+        id_raw = cfgmod.resolve(id_override or spec["id_col"])
 
-    raw = _read_delimited(path, sep, header=True)
-    raw.columns = [c.strip() for c in raw.columns]  # some headers carry trailing spaces
-    id_raw = cfgmod.resolve(id_override or spec["id_col"])
+    if id_raw not in raw.columns:
+        raise KeyError(f"{table_key} ({path}): id column {id_raw!r} not found. "
+                       f"Available: {list(raw.columns)[:15]}")
     rename = {id_raw: "ehr_id"}
     for canon, raw_name in spec.get("cols", {}).items():
         rename[cfgmod.resolve(raw_name)] = canon
-    missing = [c for c in rename if c not in raw.columns]
+    present = {k: v for k, v in rename.items() if k in raw.columns}
+    missing = [k for k in rename if k not in raw.columns]
     if missing:
-        raise KeyError(
-            f"{table_key} ({path}): columns {missing} not found. "
-            f"Available: {list(raw.columns)[:20]}. Check the RECONCILE names in config."
-        )
-    return raw[list(rename)].rename(columns=rename)
+        LOG.warning("%s: columns not found, skipped: %s", table_key, missing)
+    return raw[list(present)].rename(columns=present)
 
 
 def read_roster(cfg: dict, path: str) -> tuple[pd.DataFrame, list[str]]:

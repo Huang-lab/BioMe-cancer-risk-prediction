@@ -131,9 +131,17 @@ def gen_clinical(cfg, patients, ehr_dir, rng):
     def sep(table):
         return tables[table]["sep"]
 
+    manifest = {}
+
+    def emit(df, table):
+        """Write a table HEADERLESS and record its columns in the manifest,
+        mirroring the real BRSPD layout (data files headerless + Header_File.txt)."""
+        manifest[tables[table]["file"]] = [str(c) for c in df.columns]
+        _write(df, path(table), sep(table), header=False)
+
     # demographics (one row/patient)
     t = "demographics"
-    _write(pd.DataFrame({
+    emit(pd.DataFrame({
         idn(t): patients["ehr_id"],
         raw(t, "sex"): patients["sex"],
         raw(t, "race"): rng.choice(["White", "Black", "Asian", "Other"], size=len(patients)),
@@ -141,22 +149,22 @@ def gen_clinical(cfg, patients, ehr_dir, rng):
         raw(t, "marital_status"): rng.choice(["Single", "Married", "Divorced", "Widowed"], size=len(patients)),
         raw(t, "religion"): rng.choice(["None", "Catholic", "Jewish", "Other"], size=len(patients)),
         raw(t, "country"): rng.choice(["USA", "DR", "PR", "Other"], size=len(patients)),
-    }), path(t), sep(t))
+    }), t)
 
     # social (one row/patient)
     t = "social"
-    _write(pd.DataFrame({
+    emit(pd.DataFrame({
         idn(t): patients["ehr_id"],
         raw(t, "smoking"): rng.choice(["Never", "Former", "Current"], size=len(patients)),
         raw(t, "alcohol"): rng.choice(["Yes", "No"], size=len(patients)),
         raw(t, "years_education"): rng.integers(8, 20, size=len(patients)),
         raw(t, "date"): [_d(d) for d in patients["index_date"] - pd.Timedelta(days=400)],
-    }), path(t), sep(t))
+    }), t)
 
     # questionnaire (one row/patient) — YEAR_OF_BIRTH, FAM_HX_COLON_CANCER, pers hx
     t = "questionnaire"
     fam_flag = np.where(patients["is_case"] & (rng.random(len(patients)) < 0.35), "Yes", "No")
-    _write(pd.DataFrame({
+    emit(pd.DataFrame({
         idn(t): patients["ehr_id"],
         raw(t, "year_of_birth"): patients["year_of_birth"],
         raw(t, "country_of_birth"): rng.choice(["USA", "DR", "PR", "MX"], size=len(patients)),
@@ -168,7 +176,7 @@ def gen_clinical(cfg, patients, ehr_dir, rng):
         raw(t, "pers_hx_obesity"): rng.choice(["Yes", "No"], p=[0.3, 0.7], size=len(patients)),
         raw(t, "pers_hx_htn"): rng.choice(["Yes", "No"], p=[0.4, 0.6], size=len(patients)),
         raw(t, "smoked_100"): rng.choice(["Yes", "No"], size=len(patients)),
-    }), path(t), sep(t))
+    }), t)
 
     # longitudinal collectors
     enc, prob, med, srg, mdh, fam, hm = ([] for _ in range(7))
@@ -227,7 +235,7 @@ def gen_clinical(cfg, patients, ehr_dir, rng):
 
     def dump(table, rows, canon_order):
         cols = [idn(table)] + [raw(table, c) for c in canon_order]
-        _write(pd.DataFrame(rows, columns=cols), path(table), sep(table))
+        emit(pd.DataFrame(rows, columns=cols), table)
 
     dump("enc_diagnosis", enc, ["icd_code", "code_type", "text", "date"])
     dump("problem_list", prob, ["icd_code", "code_type", "text", "date"])
@@ -239,13 +247,16 @@ def gen_clinical(cfg, patients, ehr_dir, rng):
 
     # vitals (LONG)
     t = "vitals"
-    _write(pd.DataFrame(vit_rows, columns=[idn(t), raw(t, "name"), raw(t, "value"), raw(t, "date")]),
-           path(t), sep(t))
+    emit(pd.DataFrame(vit_rows, columns=[idn(t), raw(t, "name"), raw(t, "value"), raw(t, "date")]), t)
     # labs (LONG)
     t = "labs"
-    _write(pd.DataFrame(lab_rows, columns=[idn(t), raw(t, "date"), raw(t, "analyte"),
-                                           raw(t, "value"), raw(t, "units"), raw(t, "flag")]),
-           path(t), sep(t))
+    emit(pd.DataFrame(lab_rows, columns=[idn(t), raw(t, "date"), raw(t, "analyte"),
+                                         raw(t, "value"), raw(t, "units"), raw(t, "flag")]), t)
+
+    # BRSPD-style manifest: headerless data files + Header_File.txt with the columns
+    with open(os.path.join(ehr_dir, "Header_File.txt"), "w") as fh:
+        for fname, cols in manifest.items():
+            fh.write(f"-- {fname}\n\n{'|'.join(cols)}\n\n")
 
 
 def main():

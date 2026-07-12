@@ -89,5 +89,25 @@ def test_stratified_group_kfold_keeps_sets_together():
         assert set(groups[tr]).isdisjoint(set(groups[te]))   # no set split across folds
 
 
+# --- headerless clinical files + Header_File.txt manifest -----------------
+def test_header_manifest_and_headerless_read(tmp_path):
+    from pipeline import io
+    ehr = tmp_path
+    (ehr / "Header_File.txt").write_text(
+        "-- Demographics.txt\n\nrgnid|gender|self_reported_race|zip_first_3_char\n\n")
+    # headerless data (first row is a patient), extra trailing column not in config
+    (ehr / "Demographics.txt").write_text(
+        "SINAI_1_ABC|F|European American|100\nSINAI_2_DEF|M|Black|212\n")
+    cfg = {"ehr_tables": {"demographics": {
+        "file": "Demographics.txt", "sep": "|",
+        "cols": {"sex": "gender", "race": "self_reported_race"}}}}
+    manifest = io.load_header_manifest(str(ehr))
+    assert manifest["Demographics.txt"][0] == "rgnid"
+    df = io.read_ehr_table(cfg, str(ehr), "demographics", header_cols=manifest["Demographics.txt"])
+    assert list(df.columns) == ["ehr_id", "sex", "race"]      # id at pos0, extra col dropped
+    assert df.iloc[0]["ehr_id"] == "SINAI_1_ABC"
+    assert df.iloc[1]["sex"] == "M"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

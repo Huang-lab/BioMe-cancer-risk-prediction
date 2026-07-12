@@ -30,10 +30,16 @@ def main():
             LOG.warning("cohort %s: ehr_dir %s not found, skipping", name, ehr_dir)
             continue
         id_override = cohort.get("clinical_id_col")
+        manifest = io.load_header_manifest(ehr_dir)   # {} if files carry inline headers
+        if manifest:
+            LOG.info("cohort %s: using Header_File.txt manifest (%d tables, headerless data)",
+                     name, len(manifest))
         n_tables = 0
         for table_key in cfg["ehr_tables"]:
+            fname = cfg["ehr_tables"][table_key]["file"]
             df = io.read_ehr_table(cfg, ehr_dir, table_key, required=False,
-                                   id_override=id_override)
+                                   id_override=id_override,
+                                   header_cols=manifest.get(fname))
             if df is None:
                 LOG.warning("  %s/%s: file absent, skipped", name, table_key)
                 continue
