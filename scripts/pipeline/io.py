@@ -20,23 +20,35 @@ LOG = util.get_logger("io")
 HEADER_MANIFEST = "Header_File.txt"
 
 
+CHUNK_ROWS = 1_000_000   # ~1M rows per chunk keeps peak memory flat on multi-GB files
+
+
 def _read_delimited(path: str, sep: str, header: bool = True, usecols=None) -> pd.DataFrame:
     # EHR files are delimited plain text where " is LITERAL (e.g. 5'2" in SIG/notes):
     # QUOTE_NONE stops pandas treating it as a quote char. Fast C engine + usecols
     # (read only needed columns) keeps the huge labs/vitals files tractable;
-    # on_bad_lines="skip" drops the occasional ragged row instead of aborting.
-    return pd.read_csv(
-        path,
-        sep=sep,
-        dtype=str,
-        header=0 if header else None,
-        usecols=usecols,
-        keep_default_na=True,
-        na_values=["", "NA", "NaN", "null", "."],
-        engine="c",
-        quoting=csv.QUOTE_NONE,
-        on_bad_lines="skip",
+    # chunked reading keeps peak memory flat on multi-GB files (Order_results is
+    # ~6 GB / 55M rows on real BioMe); on_bad_lines='skip' drops rare ragged rows.
+    kw = dict(
+        sep=sep, dtype=str,
+        header=0 if header else None, usecols=usecols,
+        keep_default_na=True, na_values=["", "NA", "NaN", "null", "."],
+        engine="c", quoting=csv.QUOTE_NONE, on_bad_lines="skip",
     )
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
+    if size < 512 * 1024 * 1024:                # < 512 MB: read at once
+        return pd.read_csv(path, **kw)
+    LOG.info("reading %s (%.1f GB) in %d-row chunks", path, size / 1e9, CHUNK_ROWS)
+    parts = []
+    for i, chunk in enumerate(pd.read_csv(path, chunksize=CHUNK_ROWS, **kw)):
+        parts.append(chunk)
+        if (i + 1) % 10 == 0:
+            LOG.info("  %s: %d chunks read (%d rows so far)", os.path.basename(path),
+                     i + 1, sum(len(p) for p in parts))
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
 def load_header_manifest(ehr_dir: str, sep: str = "|",

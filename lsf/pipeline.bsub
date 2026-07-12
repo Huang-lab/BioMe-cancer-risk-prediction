@@ -10,7 +10,7 @@
 #BSUB -q premium                    # queue
 #BSUB -n 8                          # compute cores (single node)
 #BSUB -R span[hosts=1]              # keep all cores on one host (shared-memory job)
-#BSUB -R rusage[mem=8000]           # MB per core
+#BSUB -R rusage[mem=16000]          # MB per core (Order_results is ~6 GB / 55M rows)
 #BSUB -W 12:00                      # walltime HH:MM (pipeline takes minutes; generous)
 #BSUB -o %J.stdout                  # output log (%J = JobID)
 #BSUB -eo %J.stderr                 # error log
