@@ -36,13 +36,17 @@ cohorts:
     platform: regeneron_wxs
     roster:          Cancer_risk_prediction/derived/RegenWXS_HX_Newgroups.withPC.tsv
     ehr_dir:         Cancer_risk_prediction/src/Regen
-    clinical_id_col: sem_id          # clinical files key on sem_id (SINAI-format values)
+    file_prefix:     ""                # files: Demographics.txt (no prefix)
+    clinical_id_col: sem_id            # clinical files key on sem_id (SINAI-format values)
+    has_cohort_tag:  true              # 8 tables carry a leading `Regeneron` col
     carrier_flags:   Biome-alphamissense-calibration/results/cohortI/all_carriers.tsv
   - name: cohortII
     platform: sema4_wxs
     roster:          Cancer_risk_prediction/derived/Sema4WXS_HX_Newgroups.withPC.tsv
     ehr_dir:         Cancer_risk_prediction/src/Sema4
+    file_prefix:     "Sema4_"          # files: Sema4_Demographics.txt
     clinical_id_col: sem_id
+    has_cohort_tag:  false             # Sema4 files have NO leading cohort tag
     carrier_flags:   Biome-alphamissense-calibration/results/cohortII/all_carriers.tsv
 
 cohort_strategy:

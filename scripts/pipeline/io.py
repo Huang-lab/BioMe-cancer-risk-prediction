@@ -86,7 +86,9 @@ def load_header_manifest(ehr_dir: str, sep: str = "|",
 def read_ehr_table(cfg: dict, ehr_dir: str, table_key: str,
                    required: bool = False, id_override: str = None,
                    header_cols: list[str] = None,
-                   row_filter: dict[str, set] = None) -> Optional[pd.DataFrame]:
+                   row_filter: dict[str, set] = None,
+                   file_prefix: str = "",
+                   leading_cols_override: int = None) -> Optional[pd.DataFrame]:
     """Read one raw clinical table and return it with canonical column names.
 
     If ``header_cols`` is given (from a Header_File.txt manifest), the data file is
@@ -96,7 +98,7 @@ def read_ehr_table(cfg: dict, ehr_dir: str, table_key: str,
     the patient id column is required. Returns None if the file is absent.
     """
     spec = cfg["ehr_tables"][table_key]
-    path = os.path.join(ehr_dir, spec["file"])
+    path = os.path.join(ehr_dir, (file_prefix or "") + spec["file"])
     if not os.path.exists(path):
         if required:
             raise FileNotFoundError(f"{table_key}: missing required file {path}")
@@ -114,7 +116,10 @@ def read_ehr_table(cfg: dict, ehr_dir: str, table_key: str,
         # position 0 and the patient id would be captured from the wrong column
         # (silently zeroing every join). With `lead=N`, real data begins at column
         # N and manifest names[0] is the patient id.
-        lead = int(spec.get("leading_cols", 0))
+        # leading_cols_override lets a cohort disable the shift (Sema4 has no
+        # cohort tag; Regen has one on 8 tables). Explicit 0 means "force no lead".
+        lead = int(spec.get("leading_cols", 0)) if leading_cols_override is None \
+            else int(leading_cols_override)
         names_full = [f"__lead{i}__" for i in range(lead)] + [c.strip() for c in header_cols]
         wanted = {cfgmod.resolve(v) for v in spec.get("cols", {}).values()}
         keep = sorted({lead} | {i for i, c in enumerate(names_full) if c in wanted})
@@ -139,7 +144,16 @@ def read_ehr_table(cfg: dict, ehr_dir: str, table_key: str,
                             chunk[col].astype(str).str.strip().str.lower().isin(allowed)]
             return chunk
 
-        return _read_delimited(path, sep, header=False, usecols=keep, postprocess=_prep)
+        df = _read_delimited(path, sep, header=False, usecols=keep, postprocess=_prep)
+        # A few real files (Sema4_Demographics.txt) leak an inline HEADER row even
+        # though the rest are headerless. If the first row's ehr_id equals a
+        # manifest id keyword (`sem_id` / `rgnid` / `RGNID`), drop it.
+        header_id_keywords = {"sem_id", "rgnid", "RGNID"}
+        if len(df) and str(df.iloc[0].get("ehr_id", "")).strip() in header_id_keywords:
+            LOG.info("%s: dropped 1 leaked inline header row (ehr_id=%r)",
+                     table_key, df.iloc[0]["ehr_id"])
+            df = df.iloc[1:].reset_index(drop=True)
+        return df
     elif not spec.get("header", True):
         # legacy positional (headerless, explicit indices)
         raw = _read_delimited(path, sep, header=False)

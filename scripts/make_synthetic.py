@@ -116,8 +116,12 @@ def _window_dates(rng, index, k):
     return [index - pd.Timedelta(days=int(d)) for d in rng.integers(-180, 1095, size=k)]
 
 
-def gen_clinical(cfg, patients, ehr_dir, rng):
+def gen_clinical(cfg, patients, ehr_dir, rng, cohort_spec):
+    """cohort_spec: the per-cohort dict from cfg['cohorts'] (has file_prefix,
+    has_cohort_tag) — lets synthetic mirror Sema4's differences from Regen."""
     tables = cfg["ehr_tables"]
+    file_prefix = cohort_spec.get("file_prefix", "")
+    has_cohort_tag = cohort_spec.get("has_cohort_tag", True)
 
     def raw(table, canon):
         return cfgmod.resolve(tables[table]["cols"][canon])
@@ -126,7 +130,7 @@ def gen_clinical(cfg, patients, ehr_dir, rng):
         return cfgmod.resolve(tables[table]["id_col"])
 
     def path(table):
-        return os.path.join(ehr_dir, tables[table]["file"])
+        return os.path.join(ehr_dir, file_prefix + tables[table]["file"])
 
     def sep(table):
         return tables[table]["sep"]
@@ -134,18 +138,19 @@ def gen_clinical(cfg, patients, ehr_dir, rng):
     manifest = {}
 
     def emit(df, table):
-        """Write a table HEADERLESS and record its columns in the manifest,
-        mirroring the real BRSPD layout (data files headerless + Header_File.txt).
-        If the table's config declares `leading_cols`, INJECT that many
-        undocumented leading columns (e.g. cohort tag) so the leading_cols path
-        is exercised end-to-end — this reproduces the real-Regen bug on synthetic."""
+        """Write a table HEADERLESS + record its columns in the manifest,
+        mirroring the real BRSPD layout. If the table+cohort should have a
+        leading cohort tag (Regen: 8 tables; Sema4: none), inject it — this
+        reproduces the real bug on synthetic so the leading_cols path is
+        exercised end-to-end."""
         cols = [str(c) for c in df.columns]
-        lead = int(tables[table].get("leading_cols", 0))
+        lead = int(tables[table].get("leading_cols", 0)) if has_cohort_tag else 0
         out = df.copy()
+        tag_val = cohort_spec.get("platform", "Regeneron").split("_")[0].capitalize()
         for i in range(lead):
-            out.insert(i, f"__cohort_tag_{i}__", "Regeneron")
+            out.insert(i, f"__cohort_tag_{i}__", tag_val)
         # manifest only records the DOCUMENTED (post-leading) columns
-        manifest[tables[table]["file"]] = cols
+        manifest[file_prefix + tables[table]["file"]] = cols
         _write(out, path(table), sep(table), header=False)
 
     # demographics (one row/patient)
@@ -294,7 +299,7 @@ def main():
         gen_carriers(cfg, patients, name, _local(args.out, cohort["carrier_flags"]), rng)
         ehr_dir = _local(args.out, cohort["ehr_dir"])
         util.ensure_dir(ehr_dir)
-        gen_clinical(cfg, patients, ehr_dir, rng)
+        gen_clinical(cfg, patients, ehr_dir, rng, cohort)
         LOG.info("cohort %s: %d cases + %d controls -> %s", name, nc, nk, ehr_dir)
     LOG.info("synthetic data written under %s", args.out)
 

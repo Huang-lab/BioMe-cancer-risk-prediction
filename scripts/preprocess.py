@@ -17,6 +17,15 @@ from pipeline import cli, config as cfgmod, data, io, util  # noqa: E402
 
 LOG = util.get_logger("preprocess")
 
+# Values ehr_id must NOT contain — catches leading-cohort-column-shift bugs,
+# stray inline-header rows, and file-mixup mistakes. Keep in sync with io.py.
+COHORT_TAGS = {
+    "Regeneron", "REGENERON", "regeneron",
+    "Sema4", "SEMA4", "sema4",
+    "cohortI", "cohortII", "CohortI", "CohortII",
+    "sem_id", "rgnid", "RGNID",
+}
+
 
 def build_row_filters(cfg: dict) -> dict[str, dict[str, set]]:
     """For huge long-format tables, restrict rows to the target analyte/vital/topic
@@ -55,25 +64,48 @@ def main():
             LOG.warning("cohort %s: ehr_dir %s not found, skipping", name, ehr_dir)
             continue
         id_override = cohort.get("clinical_id_col")
+        file_prefix = cohort.get("file_prefix", "")
+        has_cohort_tag = cohort.get("has_cohort_tag", True)   # legacy default = Regen
         manifest = io.load_header_manifest(ehr_dir)   # {} if files carry inline headers
         if manifest:
-            LOG.info("cohort %s: using Header_File.txt manifest (%d tables, headerless data)",
-                     name, len(manifest))
+            LOG.info("cohort %s: using Header_File.txt manifest (%d tables, headerless data%s%s)",
+                     name, len(manifest),
+                     f", file_prefix={file_prefix!r}" if file_prefix else "",
+                     "" if has_cohort_tag else ", NO leading-cohort-column shift")
+        # manifest keys are the file names as they appear in Header_File.txt.
+        # For Sema4 those already start with 'Sema4_'; for Regen they don't.
         row_filters = build_row_filters(cfg)
         if row_filters:
             LOG.info("cohort %s: applying per-chunk row filters on %s",
                      name, list(row_filters))
         n_tables = 0
         for table_key in cfg["ehr_tables"]:
-            fname = cfg["ehr_tables"][table_key]["file"]
+            spec = cfg["ehr_tables"][table_key]
+            manifest_key = file_prefix + spec["file"]        # 'Sema4_Demographics.txt'
+            header_cols = manifest.get(manifest_key) or manifest.get(spec["file"])
+            # If the cohort has no leading cohort tag, force leading_cols=0 for
+            # every table regardless of the shared config (Regen sets it to 1 on 8).
+            lc_override = None if has_cohort_tag else 0
             df = io.read_ehr_table(cfg, ehr_dir, table_key, required=False,
                                    id_override=id_override,
-                                   header_cols=manifest.get(fname),
-                                   row_filter=row_filters.get(table_key))
+                                   header_cols=header_cols,
+                                   row_filter=row_filters.get(table_key),
+                                   file_prefix=file_prefix,
+                                   leading_cols_override=lc_override)
             if df is None:
                 LOG.warning("  %s/%s: file absent, skipped", name, table_key)
                 continue
             df = data.clean_table(df)
+            # Sanity check: catches leading-column-shift, stray inline-header, and
+            # file-mixup mistakes BEFORE they silently corrupt downstream joins.
+            if len(df) and "ehr_id" in df.columns:
+                tag_hit_rate = df["ehr_id"].astype(str).isin(COHORT_TAGS).mean()
+                if tag_hit_rate > 0.01:
+                    top = df["ehr_id"].astype(str).value_counts().head(3).to_dict()
+                    raise RuntimeError(
+                        f"[{name}/{table_key}] {tag_hit_rate:.0%} of ehr_id values look "
+                        f"like a cohort tag / header keyword {top}. "
+                        f"Toggle cohort.has_cohort_tag or ehr_tables.{table_key}.leading_cols.")
             data.save_tidy(df, out, name, table_key)
             LOG.info("  %s: %d rows -> %s", table_key, len(df), f"{table_key}.csv")
             n_tables += 1

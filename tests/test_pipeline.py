@@ -131,6 +131,62 @@ def test_leading_cols_offsets_id_position(tmp_path):
     assert df.iloc[1]["years_education"] == "12"
 
 
+def test_leading_cols_override_disables_shift(tmp_path):
+    """Sema4 has NO leading cohort tag while Regen has one; the same shared config
+    must not shift Sema4. leading_cols_override=0 forces no shift regardless of
+    spec.leading_cols. If it doesn't work, ehr_id captures the (non-existent) tag."""
+    from pipeline import io
+    ehr = tmp_path
+    (ehr / "Header_File.txt").write_text(
+        "-- Social_History.txt\n\nsem_id|TOBACCO_USER|YEARS_EDUCATION\n\n")
+    # Sema4-shaped file: NO leading cohort tag; id at position 0
+    (ehr / "Social_History.txt").write_text("SINAI_1_AB|Never|16\nSINAI_2_CD|Current|12\n")
+    cfg = {"ehr_tables": {"social": {
+        "file": "Social_History.txt", "sep": "|", "leading_cols": 1,   # shared Regen value
+        "cols": {"smoking": "TOBACCO_USER", "years_education": "YEARS_EDUCATION"}}}}
+    manifest = io.load_header_manifest(str(ehr))
+    df = io.read_ehr_table(cfg, str(ehr), "social",
+                           header_cols=manifest["Social_History.txt"],
+                           leading_cols_override=0)
+    assert df.iloc[0]["ehr_id"] == "SINAI_1_AB"
+    assert df.iloc[0]["smoking"] == "Never"
+
+
+def test_file_prefix_lets_cohort_ii_find_sema4_files(tmp_path):
+    """Sema4 files use a 'Sema4_' prefix on disk; the manifest section headers
+    also use that prefix. file_prefix should let read_ehr_table find them."""
+    from pipeline import io
+    ehr = tmp_path
+    (ehr / "Sema4_Demographics.txt").write_text("SINAI_1|F|White\n")
+    cfg = {"ehr_tables": {"demographics": {
+        "file": "Demographics.txt", "sep": "|",
+        "cols": {"sex": "gender", "race": "self_reported_race"}}}}
+    df = io.read_ehr_table(cfg, str(ehr), "demographics", file_prefix="Sema4_",
+                           header_cols=["sem_id", "gender", "self_reported_race"])
+    assert df is not None and df.iloc[0]["ehr_id"] == "SINAI_1"
+
+
+def test_leaked_inline_header_row_dropped(tmp_path):
+    """Sema4_Demographics.txt has an inline header row while other Sema4 files
+    are headerless. The reader assigns manifest names positionally, then must
+    drop the row where ehr_id equals a manifest id keyword."""
+    from pipeline import io
+    ehr = tmp_path
+    (ehr / "Header_File.txt").write_text(
+        "-- Demographics.txt\n\nsem_id|gender|self_reported_race\n\n")
+    # Row 0 IS the header (Sema4 quirk); rows 1+ are data
+    (ehr / "Demographics.txt").write_text(
+        "sem_id|gender|self_reported_race\nSINAI_1|F|White\nSINAI_2|M|Black\n")
+    cfg = {"ehr_tables": {"demographics": {
+        "file": "Demographics.txt", "sep": "|",
+        "cols": {"sex": "gender", "race": "self_reported_race"}}}}
+    manifest = io.load_header_manifest(str(ehr))
+    df = io.read_ehr_table(cfg, str(ehr), "demographics",
+                           header_cols=manifest["Demographics.txt"])
+    assert len(df) == 2
+    assert list(df["ehr_id"]) == ["SINAI_1", "SINAI_2"]     # 'sem_id' row dropped
+
+
 def test_headerless_read_tolerates_literal_quotes(tmp_path):
     """EHR text fields can contain a literal " (e.g. a height 5'2\") — must not break parsing."""
     from pipeline import io
