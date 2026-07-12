@@ -7,6 +7,7 @@ always ``ehr_id``.
 """
 from __future__ import annotations
 
+import csv
 import os
 from typing import Optional
 
@@ -20,6 +21,9 @@ HEADER_MANIFEST = "Header_File.txt"
 
 
 def _read_delimited(path: str, sep: str, header: bool = True) -> pd.DataFrame:
+    # EHR files are delimited plain text where " is LITERAL (e.g. 5'2" in SIG/notes):
+    # QUOTE_NONE stops pandas treating it as a quote char. on_bad_lines="warn" skips
+    # the occasional ragged row instead of aborting the whole run.
     return pd.read_csv(
         path,
         sep=sep,
@@ -28,6 +32,8 @@ def _read_delimited(path: str, sep: str, header: bool = True) -> pd.DataFrame:
         keep_default_na=True,
         na_values=["", "NA", "NaN", "null", "."],
         engine="python",
+        quoting=csv.QUOTE_NONE,
+        on_bad_lines="warn",
     )
 
 

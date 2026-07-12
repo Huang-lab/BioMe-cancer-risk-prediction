@@ -109,5 +109,18 @@ def test_header_manifest_and_headerless_read(tmp_path):
     assert df.iloc[1]["sex"] == "M"
 
 
+def test_headerless_read_tolerates_literal_quotes(tmp_path):
+    """EHR text fields can contain a literal " (e.g. a height 5'2\") — must not break parsing."""
+    from pipeline import io
+    (tmp_path / "Medications.txt").write_text(
+        'SINAI_1_AB|take 1 tab, 5\'2" person|01/01/2020\nSINAI_2_CD|aspirin|02/02/2020\n')
+    cfg = {"ehr_tables": {"meds": {"file": "Medications.txt", "sep": "|",
+                                   "cols": {"name": "DESCRIPTION", "date": "ordering_date"}}}}
+    df = io.read_ehr_table(cfg, str(tmp_path), "meds",
+                           header_cols=["rgnid", "DESCRIPTION", "ordering_date"])
+    assert len(df) == 2
+    assert '5\'2"' in df.iloc[0]["name"]
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
