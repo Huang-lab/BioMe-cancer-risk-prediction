@@ -127,6 +127,41 @@ def raw_uncovered_values(lines, cfg, cohort_cfg, table_key, col, label_map, top_
             _emit(lines, f"    {c:>8}  {v}")
 
 
+def audit_static_columns(lines, out, cohort, cfg, top_n=8):
+    """For every configured cols: mapping in ehr_tables, report fill-rate + top
+    values in the interim CSV, so an empty column (raw name never matched, or
+    real column is genuinely empty) shows up loudly instead of silently landing
+    in the model as always-NaN."""
+    for table_key, spec in cfg["ehr_tables"].items():
+        cols_map = spec.get("cols") or {}
+        if not cols_map:
+            continue
+        df = data.load_tidy(out, cohort, table_key)
+        if df is None or df.empty:
+            _emit(lines, f"  {table_key}: interim CSV missing or empty")
+            continue
+        n_rows = len(df)
+        n_subj = df["ehr_id"].nunique() if "ehr_id" in df.columns else n_rows
+        _emit(lines, f"  {table_key}: {n_rows} rows, {n_subj} subjects "
+                     f"({list(df.columns)})")
+        for canon in cols_map:
+            if canon not in df.columns:
+                _emit(lines, f"    ! '{canon}' MISSING from interim -- raw column "
+                             f"{cols_map[canon]!r} not in the file we read")
+                continue
+            s = df[canon].astype(str).str.strip().replace({"nan": "", "None": ""})
+            nonnull = (s != "").sum()
+            fill = nonnull / n_rows if n_rows else 0
+            if nonnull == 0:
+                _emit(lines, f"    ! '{canon}' (raw {cols_map[canon]!r}) 100% EMPTY "
+                             f"-- feature will always be NaN in downstream")
+                continue
+            top = s[s != ""].value_counts().head(top_n)
+            top_str = ", ".join(f"{v!r}={c}" for v, c in top.items())
+            _emit(lines, f"    {canon} (raw {cols_map[canon]!r}): fill={fill:.1%} "
+                         f"({nonnull}/{n_rows}); top: {top_str}")
+
+
 def audit_icd(lines, dxw, prefixes_by_key, n_subjects):
     if dxw is None or dxw.empty:
         _emit(lines, "  (no diagnosis rows to check)")
@@ -167,7 +202,10 @@ def main():
         lines.append(f"\n## cohort {cohort}\n")
         n_subjects = int((pheno["cohort"] == cohort).sum())
 
-        lines.append("### vitals")
+        lines.append("### per-column fill-rate across every configured feature")
+        audit_static_columns(lines, out, cohort, cfg)
+
+        lines.append("\n### vitals")
         audit_category_column(lines, data.load_tidy(out, cohort, "vitals"),
                               "name", "unit", fm["vital_signs"], "vitals")
         if args.raw and cohort in cohort_cfgs:
