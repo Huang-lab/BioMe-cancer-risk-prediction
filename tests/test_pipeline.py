@@ -200,5 +200,165 @@ def test_headerless_read_tolerates_literal_quotes(tmp_path):
     assert '5\'2"' in df.iloc[0]["name"]
 
 
+# --- static-feature source fallback (the empty-column guard) ---------------
+def test_coalesce_static_falls_back_when_first_source_empty():
+    """`education` must come from Questionnaire.EDUCATION_HIGHEST_GRADE when
+    Social_History.YEARS_EDUCATION is empty in the real export — the coalesce
+    fallback picks the first source that actually has a value per patient."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+    import features
+    index = pd.Index(["p1", "p2", "p3"], name="ehr_id")
+    tables = {
+        # social YEARS_EDUCATION is entirely blank (mirrors real BioMe)
+        "social": pd.DataFrame({"ehr_id": ["p1", "p2", "p3"],
+                                "years_education": ["", "", ""]}),
+        # questionnaire carries the real education signal (+ p3 missing to prove
+        # per-patient coalesce, not all-or-nothing)
+        "questionnaire": pd.DataFrame({"ehr_id": ["p1", "p2"],
+                                       "education_grade": ["College", "HS"]}),
+    }
+    sources = [["questionnaire", "education_grade"], ["social", "years_education"]]
+    col = features.coalesce_static(index, tables, sources)
+    assert col.loc["p1"] == "College" and col.loc["p2"] == "HS"
+    assert pd.isna(col.loc["p3"])          # blank social + absent questionnaire -> NaN, not ""
+
+    # reverse priority: a populated first source is NOT overwritten by a later one
+    sources_rev = [["social", "years_education"], ["questionnaire", "education_grade"]]
+    col2 = features.coalesce_static(index, tables, sources_rev)
+    assert col2.loc["p1"] == "College"     # social blank -> still falls through
+
+
+# --- lab sentinel value + unit allowlist (Fix 1 / Fix 2) -------------------
+def test_long_agg_drops_sentinel_value():
+    """9999999 is a real data-entry-error sentinel found in Order_results --
+    one such row must not blow out last/mean for that patient."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+    import features
+    win_df = pd.DataFrame({
+        "ehr_id": ["p1", "p1", "p1"],
+        "analyte": ["WBC", "WBC", "WBC"],
+        "value": ["6.5", "9999999", "7.0"],
+        "date": pd.to_datetime(["2019-01-01", "2019-02-01", "2019-03-01"]),
+    })
+    agg = features._long_agg(win_df, "analyte", ["WBC"], sentinel_values=[9999999])
+    last, mean, _ = agg
+    assert last.loc["p1"] == 7.0
+    assert mean.loc["p1"] == pytest.approx(6.75)   # (6.5+7.0)/2, sentinel excluded
+
+
+def test_unit_allowlist_drops_cross_unit_contamination():
+    """A WBC value recorded under the wrong reference unit (same component_name,
+    different real unit) must be excluded before aggregation."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+    from features import _apply_unit_allowlist, _long_agg
+    win_lab = pd.DataFrame({
+        "ehr_id": ["p1", "p1"],
+        "analyte": ["WBC", "WBC"],
+        "value": ["6.5", "999.0"],
+        "units": ["K/uL", "mg/dL"],       # second row: wrong unit for WBC
+        "date": pd.to_datetime(["2019-01-01", "2019-02-01"]),
+    })
+    filtered = _apply_unit_allowlist(win_lab, ["K/uL", "x10E3/uL"])
+    last, _, _ = _long_agg(filtered, "analyte", ["WBC"])
+    assert last.loc["p1"] == 6.5
+
+
+# --- vitals physiological clipping (Fix 3) ----------------------------------
+def test_vitals_clips_implausible_height_before_bmi():
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+    import features
+    win_vit = pd.DataFrame({
+        "ehr_id": ["p1", "p2"],
+        "name": ["HEIGHT", "HEIGHT"],
+        "value": ["67", "5"],            # p2: implausible (5 inches -- data-entry error)
+        "date": pd.to_datetime(["2019-01-01", "2019-01-01"]),
+        "unit": ["INCHES", "INCHES"],
+    })
+    cfg = {"feature_maps": {"vital_signs": {"height": ["HEIGHT"], "weight": [], "bp": []},
+                            "vitals_units": {"height": "in", "weight": "oz"}}}
+    feats = pd.DataFrame(index=pd.Index(["p1", "p2"], name="ehr_id"))
+    th = {"height_valid_in": [48, 84], "weight_valid_lb": [30, 500], "bmi_valid": [10, 70]}
+    win = pd.DataFrame({"ehr_id": ["p1", "p2"],
+                        "lo": pd.to_datetime(["2018-01-01", "2018-01-01"]),
+                        "hi": pd.to_datetime(["2020-01-01", "2020-01-01"])})
+    features.vitals_features(cfg, {"vitals": win_vit}, win, feats, th)
+    assert feats.loc["p1", "height_last"] == 67
+    assert pd.isna(feats.loc["p2", "height_last"])   # clipped to NaN, not left at 5
+
+
+def test_build_row_filters_handles_dict_shaped_lab_analytes():
+    """preprocess.py's chunked-reader row filter must extract `labels` from the
+    new {labels, units} dict form -- otherwise it iterates the dict's KEYS
+    ("labels", "units") instead of the analyte names and silently filters out
+    every lab row before features.py ever sees them."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+    import preprocess
+    cfg = {
+        "ehr_tables": {"labs": {}},
+        "feature_maps": {"lab_analytes": {
+            "wbc": {"labels": ["WBC", "WHITE BLOOD CELL"], "units": ["K/uL"]},
+            "cea": ["CEA", "CARCINOEMBRYONIC AG"],   # flat-list backward compat
+        }},
+    }
+    filters = preprocess.build_row_filters(cfg)
+    assert filters["labs"]["analyte"] == {"wbc", "white blood cell", "cea", "carcinoembryonic ag"}
+
+
+def test_lab_spec_backward_compat_flat_list():
+    from features import _lab_spec
+    labels, units = _lab_spec(["WBC", "WHITE BLOOD CELL"])
+    assert labels == ["WBC", "WHITE BLOOD CELL"] and units == []
+    labels, units = _lab_spec({"labels": ["WBC"], "units": ["K/uL"]})
+    assert labels == ["WBC"] and units == ["K/uL"]
+
+
+# --- PERS_HX_* "who has it" binarization (Fix 4) ----------------------------
+def test_pers_hx_you_regex_matches_whole_word_only():
+    s = pd.Series(["You", "Your Mother", "You, Your Mother", "No", pd.NA])
+    hit = s.astype(str).str.contains(r"\bYou\b", na=False, regex=True)
+    assert list(hit) == [True, False, True, False, False]
+
+
+# --- smoking / alcohol collapse maps (Fix 5 / Fix 6) ------------------------
+def test_smoking_map_collapses_to_four_buckets():
+    from features import SMOKING_MAP
+    raw = pd.Series(["Never Smoker", "Former Smoker", "Current Every Day Smoker",
+                     "Light Smoker", "Unknown if Ever Smoked", "Never Assessed"])
+    collapsed = raw.str.strip().str.lower().map(SMOKING_MAP).fillna("unknown")
+    assert set(collapsed) == {"never", "former", "current", "unknown"}
+
+
+def test_alcohol_map_not_asked_is_nan_not_zero():
+    from features import ALCOHOL_MAP
+    raw = pd.Series(["Yes", "No", "Not Currently", "Not Asked"])
+    mapped = raw.str.strip().str.lower().map(ALCOHOL_MAP)
+    assert mapped.tolist()[:3] == [1, 0, 0]
+    assert pd.isna(mapped.iloc[3])          # "Not Asked" -> NaN, NOT 0
+
+
+# --- education ordinal encoding (Fix 7) -------------------------------------
+def test_education_ordinal_map_four_distinct_grades():
+    from features import EDUCATION_ORDINAL_MAP
+    raw = pd.Series(["Elementary/Primary School (includes grades 1 - 5)",
+                     "Middle School/Junior High (includes grades 6 - 8)",
+                     "High School/Preparatory School",
+                     "Trade School/Vocational School",
+                     "University/College", "Other"])
+    ordinal = (raw.str.strip().str.lower().str.split(",").str[0].str.strip()
+              .map(EDUCATION_ORDINAL_MAP))
+    assert set(ordinal.dropna()) == {1, 2, 3, 4}
+
+
+# --- control_labels resolution (Fix 11) -------------------------------------
+def test_resolve_control_labels_list_form():
+    cfg = {"roster": {"control_labels": ["Control (age≥50)", "Control (age<50)"]}}
+    assert cfgmod.resolve_control_labels(cfg) == ["Control (age≥50)", "Control (age<50)"]
+
+
+def test_resolve_control_labels_backward_compat_singular():
+    cfg = {"roster": {"control_label": "control"}}
+    assert cfgmod.resolve_control_labels(cfg) == ["control"]
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

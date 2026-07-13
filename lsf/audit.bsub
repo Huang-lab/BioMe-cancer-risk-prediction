@@ -1,0 +1,52 @@
+#!/bin/bash
+# =====================================================================
+# LSF CHECKPOINT job — preprocess + phenotype + feature audit ONLY.
+#   bsub < lsf/audit.bsub
+#
+# Purpose: prove the data is being read correctly BEFORE spending hours on
+# matching / training / SHAP. This runs the expensive raw-file parse ONCE,
+# writes the interim CSVs, then audits every configured feature's fill-rate
+# and value strings. Read CRC/feature_audit.md, fix any wrong feature_maps
+# guesses or empty-column sourcing in config, then submit lsf/pipeline.bsub.
+#
+# It stops before train/evaluate, so you find "smoking is 100% empty" or
+# "labs 'WBC' never matches the real component_name" in minutes, not after a
+# full run. The interim CSVs it writes are reused by the full pipeline — the
+# raw parse is NOT repeated.
+# =====================================================================
+#BSUB -J crc_audit
+#BSUB -P acc_rg_huangk06            # <-- SET to your allocation account (acc_...)
+#BSUB -q premium
+#BSUB -n 2
+#BSUB -R span[hosts=1]
+#BSUB -R rusage[mem=16000]          # MB per core -> 32 GB (Order_results ~6 GB / 55M rows)
+#BSUB -W 6:00                       # walltime — raw parse dominates; no training here
+#BSUB -o %J.stdout
+#BSUB -eo %J.stderr
+#BSUB -L /bin/bash
+
+set -euo pipefail
+
+CONFIG=${CONFIG:-config/crc.yaml}
+
+module purge
+module load anaconda3
+source activate cancer-risk-biome
+
+cd "$LS_SUBCWD"
+
+# Rosters (attach PCs + SAMPLE_ID alias); idempotent.
+python scripts/prep_roster_cohortI.py
+python scripts/prep_roster_cohortII.py
+
+# preprocess -> phenotype -> audit. Stops before matching/training.
+python scripts/run.py --config "$CONFIG" \
+    --stages preprocess,phenotype,audit_feature_maps
+
+# To ALSO scan the raw Vitals/Order_results for name/analyte values that no
+# feature_maps label covers at all (slower — re-reads the multi-GB files),
+# run this line too after the run above:
+# python scripts/audit_feature_maps.py --config "$CONFIG" --raw
+
+echo "Audit checkpoint done. READ: Cancer_risk_prediction/CRC/feature_audit.md"
+echo "Fix any zero-match / empty-column findings in config, THEN: bsub < lsf/pipeline.bsub"

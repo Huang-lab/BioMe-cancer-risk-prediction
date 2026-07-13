@@ -42,8 +42,8 @@ def cohort_patient_ids(cfg: dict, cohort: dict) -> set[str] | None:
         return None
     roster_df, _ = io.read_roster(cfg, roster_path)
     case_labels = set(cfgmod.resolve(cfg["roster"]["case_labels"]))
-    control_label = cfg["roster"]["control_label"]
-    keep = case_labels | {control_label}
+    control_labels = set(cfgmod.resolve_control_labels(cfg))
+    keep = case_labels | control_labels
     if cfg["roster"].get("drop_other_groups", True):
         roster_df = roster_df[roster_df["group"].astype(str).str.strip().isin(keep)]
     return set(roster_df["ehr_id"].astype(str).str.strip().str.lower())
@@ -57,8 +57,13 @@ def build_row_filters(cfg: dict) -> dict[str, dict[str, set]]:
     filters: dict[str, dict[str, set]] = {}
 
     def _flat_lower(mapping):
+        """Flatten a feature_maps sub-mapping to a lowercased label set. Values
+        are either a flat list (vital_signs) or the newer {labels, units} dict
+        form (lab_analytes) -- extract `labels` in the dict case so the filter
+        doesn't silently collapse to the dict's KEYS ("labels", "units")."""
         vals = set()
-        for lst in mapping.values():
+        for entry in mapping.values():
+            lst = entry.get("labels", []) if isinstance(entry, dict) else entry
             for v in lst:
                 vals.add(str(v).strip().lower())
         return vals

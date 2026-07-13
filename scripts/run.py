@@ -20,6 +20,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 STAGES = ["preprocess", "phenotype", "match", "features",
           "genomics", "build_dataset", "train", "evaluate", "external_validate", "report"]
+# stages runnable via --stages but not part of the default end-to-end run
+EXTRA_STAGES = ["audit_feature_maps"]
 
 
 def run(script, extra):
@@ -35,7 +37,19 @@ def main():
     ap.add_argument("--with-synthetic", action="store_true",
                     help="generate synthetic data into --data-root first (local testing)")
     ap.add_argument("--population", choices=["matched", "full", "both"], default="both")
+    ap.add_argument("--stages", default=None,
+                    help="comma-separated subset to run instead of the full pipeline "
+                         "(e.g. 'preprocess,phenotype,audit_feature_maps' for a fast "
+                         "checkpoint before the expensive train). Order is preserved.")
     args = ap.parse_args()
+
+    if args.stages:
+        stages = [s.strip() for s in args.stages.split(",") if s.strip()]
+        unknown = [s for s in stages if s not in STAGES + EXTRA_STAGES]
+        if unknown:
+            sys.exit(f"unknown stage(s): {unknown}. Known: {STAGES + EXTRA_STAGES}")
+    else:
+        stages = STAGES
 
     common = ["--config", args.config]
     if args.data_root:
@@ -46,13 +60,14 @@ def main():
             sys.exit("--with-synthetic requires --data-root")
         run("make_synthetic.py", ["--config", args.config, "--out", args.data_root])
 
-    for stage in STAGES:
+    for stage in stages:
         extra = list(common)
         if stage == "train":
             extra += ["--population", args.population]
         run(f"{stage}.py", extra)
 
-    print("\nPipeline complete.", flush=True)
+    print(f"\n{'Checkpoint' if args.stages else 'Pipeline'} complete"
+          f" ({', '.join(stages)}).", flush=True)
 
 
 if __name__ == "__main__":

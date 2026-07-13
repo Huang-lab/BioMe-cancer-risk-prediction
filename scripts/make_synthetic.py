@@ -47,7 +47,9 @@ DECOY_GROUP = "Other Cancer"   # exercises roster.drop_other_groups (neither cas
 
 def make_patients(rng, cohort_name, n_cases, n_controls, id_start, cfg):
     case_label = cfgmod.resolve(cfg["roster"]["case_labels"])[0]
-    control_label = cfg["roster"]["control_label"]
+    # both control age strata (mirrors real roster.control_labels); mixed across
+    # rows so the pipeline actually exercises accepting BOTH as controls.
+    control_labels = cfgmod.resolve_control_labels(cfg)
     n_pc = len(cfgmod.resolve(cfg["roster"]["pc_cols"]))
     n_decoy = max(5, n_controls // 20)
     rows = []
@@ -56,9 +58,16 @@ def make_patients(rng, cohort_name, n_cases, n_controls, id_start, cfg):
         is_control = n_cases <= i < n_cases + n_controls
         gid = id_start + i
         index = pd.Timestamp("2015-01-01") + pd.Timedelta(days=int(rng.integers(0, 2200)))
-        # controls are age>=50 by definition (encoded in the roster group label)
-        age = int(rng.integers(50, 82)) if is_control else int(rng.integers(45, 82))
-        group = case_label if is_case else (control_label if is_control else DECOY_GROUP)
+        if is_control:
+            group = control_labels[i % len(control_labels)]
+            # age matches whichever control stratum the label encodes
+            age = int(rng.integers(20, 50)) if "<50" in group else int(rng.integers(50, 82))
+        elif is_case:
+            group = case_label
+            age = int(rng.integers(45, 82))
+        else:
+            group = DECOY_GROUP
+            age = int(rng.integers(45, 82))
         # clinical files key on sem_id whose VALUES are SINAI-format ids; the roster's
         # SINAI_ID == sem_id == carrier sample_id. MASKED_MRN is a separate integer.
         sinai = f"SINAI_{gid}_AB{int(rng.integers(10_000_000, 99_999_999))}"
@@ -165,30 +174,55 @@ def gen_clinical(cfg, patients, ehr_dir, rng, cohort_spec):
         raw(t, "country"): rng.choice(["USA", "DR", "PR", "Other"], size=len(patients)),
     }), t)
 
-    # social (one row/patient)
+    # social (one row/patient). Raw TOBACCO_USER/IS_ALCOHOL_USER categories are
+    # the CONFIRMED real Epic values (collapsed downstream by features.py's
+    # SMOKING_MAP / ALCOHOL_MAP -- keep these strings in sync with that map).
     t = "social"
+    smoking_raw = ["Never Smoker", "Former Smoker", "Current Every Day Smoker",
+                   "Light Smoker", "Unknown if Ever Smoked"]
+    alcohol_raw = ["Yes", "No", "Not Currently", "Not Asked"]
     emit(pd.DataFrame({
         idn(t): patients["ehr_id"],
-        raw(t, "smoking"): rng.choice(["Never", "Former", "Current"], size=len(patients)),
-        raw(t, "alcohol"): rng.choice(["Yes", "No"], size=len(patients)),
-        raw(t, "years_education"): rng.integers(8, 20, size=len(patients)),
+        raw(t, "smoking"): rng.choice(smoking_raw, size=len(patients)),
+        raw(t, "alcohol"): rng.choice(alcohol_raw, size=len(patients)),
+        # YEARS_EDUCATION is EMPTY in the real BioMe Social_History export (only
+        # 2.2% filled vs 58.6% for Questionnaire.EDUCATION_HIGHEST_GRADE) --
+        # leave it blank here so the audit flags it; features.py no longer
+        # reads this column at all (real source: Questionnaire, below).
+        raw(t, "years_education"): [""] * len(patients),
         raw(t, "date"): [_d(d) for d in patients["index_date"] - pd.Timedelta(days=400)],
     }), t)
 
-    # questionnaire (one row/patient) — YEAR_OF_BIRTH, FAM_HX_COLON_CANCER, pers hx
+    # questionnaire (one row/patient) — YEAR_OF_BIRTH, FAM_HX_COLON_CANCER, pers hx.
+    # PERS_HX_* (except PERS_HX_SMOKING) store WHO has the condition, not Yes/No
+    # -- "You" (patient), "Your Mother"/etc. (relative, NOT the patient), or "No".
     t = "questionnaire"
     fam_flag = np.where(patients["is_case"] & (rng.random(len(patients)) < 0.35), "Yes", "No")
+    who_options = ["No", "You", "Your Mother", "Your Father", "You, Your Mother"]
+    who_p = [0.55, 0.20, 0.10, 0.10, 0.05]
+
+    def who_col():
+        return rng.choice(who_options, p=who_p, size=len(patients))
+
+    # EDUCATION_HIGHEST_GRADE: confirmed real category text (matches
+    # features.EDUCATION_ORDINAL_MAP keys exactly, case-insensitive).
+    education_raw = ["Elementary/Primary School (includes grades 1 - 5)",
+                     "Middle School/Junior High (includes grades 6 - 8)",
+                     "High School/Preparatory School",
+                     "Trade School/Vocational School",
+                     "University/College", "Other"]
     emit(pd.DataFrame({
         idn(t): patients["ehr_id"],
         raw(t, "year_of_birth"): patients["year_of_birth"],
         raw(t, "country_of_birth"): rng.choice(["USA", "DR", "PR", "MX"], size=len(patients)),
         raw(t, "language_preference"): rng.choice(["English", "Spanish"], size=len(patients)),
-        raw(t, "education_grade"): rng.choice(["<HS", "HS", "College", "Grad"], size=len(patients)),
+        raw(t, "education_grade"): rng.choice(education_raw, size=len(patients)),
         raw(t, "fam_hx_colon_cancer"): fam_flag,
-        raw(t, "pers_hx_ibd"): rng.choice(["Yes", "No"], p=[0.05, 0.95], size=len(patients)),
-        raw(t, "pers_hx_diabetes"): rng.choice(["Yes", "No"], p=[0.2, 0.8], size=len(patients)),
-        raw(t, "pers_hx_obesity"): rng.choice(["Yes", "No"], p=[0.3, 0.7], size=len(patients)),
-        raw(t, "pers_hx_htn"): rng.choice(["Yes", "No"], p=[0.4, 0.6], size=len(patients)),
+        raw(t, "pers_hx_ibd"): who_col(),
+        raw(t, "pers_hx_diabetes"): who_col(),
+        raw(t, "pers_hx_obesity"): who_col(),
+        raw(t, "pers_hx_htn"): who_col(),
+        raw(t, "pers_hx_smoking"): rng.choice(["Yes", "No"], size=len(patients)),
         raw(t, "smoked_100"): rng.choice(["Yes", "No"], size=len(patients)),
     }), t)
 
@@ -221,18 +255,26 @@ def gen_clinical(cfg, patients, ehr_dir, rng, cohort_spec):
             vit_rows.append((eid, "WEIGHT/SCALE", wt_oz, _d(d), "oz"))
             vit_rows.append((eid, "BP", f"{sbp}/{dbp}", _d(d), "Blood Pressure"))
 
-        # labs (LONG) — component_name values matching feature_maps.lab_analytes
-        analytes = {"WBC": (6.5, 2), "HGB": (13.5, 1.5), "PLATELET COUNT": (250, 60),
-                    "CREATININE": (0.9, 0.2), "ALT": (25, 10), "AST": (22, 9)}
-        for name, (mu, sd) in analytes.items():
+        # labs (LONG) — component_name + real reference unit, matching
+        # feature_maps.lab_analytes' labels/units allowlists.
+        analytes = {"WBC": (6.5, 2, "K/uL"), "HGB": (13.5, 1.5, "g/dL"),
+                    "PLATELET COUNT": (250, 60, "K/uL"), "CREATININE": (0.9, 0.2, "mg/dL"),
+                    "ALT": (25, 10, "U/L"), "AST": (22, 9, "U/L")}
+        for name, (mu, sd, unit) in analytes.items():
             for d in _window_dates(rng, idx, 3):
-                lab_rows.append((eid, _d(d), name, round(float(rng.normal(mu, sd)), 1), "u", "N"))
+                lab_rows.append((eid, _d(d), name, round(float(rng.normal(mu, sd)), 1), unit, "N"))
+        # one implausible sentinel row per ~50 patients -- exercises the
+        # lab_sentinel_values filter (confirmed real Order_results artifact).
+        if rng.random() < 0.02:
+            lab_rows.append((eid, _d(idx - pd.Timedelta(days=200)), "WBC", 9999999, "K/uL", "N"))
         if rng.random() < (0.5 if is_case else 0.05):
             lab_rows.append((eid, _d(idx - pd.Timedelta(days=90)), "CEA",
                              round(float(rng.normal(3, 2)), 1), "ng/mL", "N"))
 
         if is_case and rng.random() < 0.3:
-            fam.append((eid, "mother", "colorectal cancer", _d(idx - pd.Timedelta(days=2000))))
+            # "Colon Cancer" is the confirmed real Family_History term (neither
+            # "colorectal" nor "rectal cancer" has any rows in the real data).
+            fam.append((eid, "mother", "Colon Cancer", _d(idx - pd.Timedelta(days=2000))))
         for name in ["aspirin", "ibuprofen"]:
             if rng.random() < 0.3:
                 med.append((eid, name, _d(idx - pd.Timedelta(days=int(rng.integers(182, 900))))))
@@ -245,7 +287,9 @@ def gen_clinical(cfg, patients, ehr_dir, rng, cohort_spec):
         mdh.append((eid, "I10", "ICD-10", "hypertension",
                     _d(idx - pd.Timedelta(days=int(rng.integers(200, 1500))))))
         if rng.random() < 0.5:
-            hm.append((eid, "Colorectal Cancer Screening",
+            # "Colonoscopy" is the confirmed real hm_topic_name value --
+            # "Colorectal Cancer Screening" has 0 rows in the real data.
+            hm.append((eid, "Colonoscopy",
                        _d(idx - pd.Timedelta(days=int(rng.integers(200, 1600)))), "colonoscopy"))
 
     def dump(table, rows, canon_order):

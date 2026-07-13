@@ -70,7 +70,10 @@ roster:
   sample_id_col:      SAMPLE_ID              # alias of SINAI_ID (== carrier sample_id)
   group_col:          Group
   case_labels:        ["Colon/Rectum"]
-  control_label:      "Control (age≥50)"     # ≥ is U+2265 — keep verbatim
+  # Both control age strata (≥ is U+2265 — keep verbatim). "Family History
+  # (age≥50)"/"(age<50)" are a DIFFERENT roster group and must NOT be treated
+  # as controls -- they are deliberately excluded by omission here.
+  control_labels:     ["Control (age≥50)", "Control (age<50)"]
   drop_other_groups:  true
   ancestry_group_col: genetically_determined
   pc_cols:            [PC1, PC2, PC3, PC4]
@@ -188,7 +191,7 @@ ehr_tables:
       topic: hm_topic_name
       date:  entry_date
       type:  hm_type
-    colonoscopy_topics: ["Colorectal Cancer Screening", "Colonoscopy"]
+    colonoscopy_topics: ["COLONOSCOPY"]   # "Colorectal Cancer Screening" has 0 rows in this dataset
   questionnaire:                      # rich self-report survey (like AoU)
     file: Questionnaire.txt
     sep: "|"
@@ -204,6 +207,7 @@ ehr_tables:
       pers_hx_diabetes:    PERS_HX_DIABETES
       pers_hx_obesity:     PERS_HX_OBESITY
       pers_hx_htn:         PERS_HX_HIGH_BLOOD_PRESSURE
+      pers_hx_smoking:     PERS_HX_SMOKING       # genuinely Yes/No (unlike the other pers_hx_* "who has it" columns)
       smoked_100:          SMOKED_GT_100_CIGARETTES_EVER
 
 # ---------------------------------------------------------------------
@@ -242,7 +246,11 @@ genomics:
     evidence_cols: {acmg: in_ACMG, alphamissense: in_AM, clinvar: in_ClinVar}
     positive_value: "yes"
   carrier_evidence: any_of
-  evidence_sources: [clinvar, alphamissense]   # strict alternative: [acmg]
+  # ClinVar-only: a variant is called pathogenic only if ClinVar itself lists it
+  # P/LP. AlphaMissense calibration scores are excluded from carrier-calling
+  # (confirmed decision from real-data review -- AlphaMissense alone was
+  # inflating carrier counts with variants ClinVar hasn't classified).
+  evidence_sources: [clinvar]                  # strict alternative: [acmg]
   panel: [MLH1, MSH2, MSH6, PMS2, EPCAM, APC, MUTYH, SMAD4, STK11,
           BMPR1A, PTEN, POLE, POLD1, NTHL1]
   aggregate_flag: lynch_any
@@ -251,6 +259,44 @@ genomics:
     lynch_any:     [MLH1, MSH2, MSH6, PMS2, EPCAM]
     crc_panel_any: [MLH1, MSH2, MSH6, PMS2, EPCAM, APC, MUTYH, SMAD4, STK11,
                     BMPR1A, PTEN, POLE, POLD1, NTHL1]
+
+# ---------------------------------------------------------------------
+# Static (one-row-per-patient) feature sourcing. Each modeling feature maps to
+# an ORDERED list of [interim_table, canonical_column] sources; the first source
+# with a non-empty value for a patient wins (coalesce with fallback). This is
+# how an empty column in its "expected" table falls back to another table
+# instead of silently landing in the model as always-NaN.
+#
+# `education` reads Questionnaire FIRST because Social_History.YEARS_EDUCATION is
+# EMPTY in the real BioMe export — the real education signal is
+# Questionnaire.EDUCATION_HIGHEST_GRADE (kept social.years_education as a fallback).
+# Run scripts/audit_feature_maps.py to see per-column fill-rate and confirm which
+# source actually carries data before trusting any of these.
+# ---------------------------------------------------------------------
+static_features:
+  race:                [[demographics, race]]
+  ethnicity:           [[demographics, ethnicity]]
+  marital_status:      [[demographics, marital_status]]
+  religion:            [[demographics, religion]]
+  country:             [[demographics, country]]
+  smoking_status:      [[social, smoking]]
+  alcohol_use:         [[social, alcohol]]
+  # education_grade is the RAW category text from Questionnaire; features.py
+  # ordinal-encodes it into the real modeling feature `years_education` and
+  # drops this raw column. Social_History.YEARS_EDUCATION is only 2.2% filled
+  # in the real export (vs 58.6% for Questionnaire.EDUCATION_HIGHEST_GRADE) so
+  # it is NOT used as a source at all anymore (confirmed from real-data audit).
+  education_grade:     [[questionnaire, education_grade]]
+  country_of_birth:    [[questionnaire, country_of_birth]]
+  language_preference: [[questionnaire, language_preference]]
+  # PERS_HX_* columns store WHO has the condition ("You", "Your Mother", ...),
+  # NOT Yes/No -- features.py binarizes on whether "You" (the patient) appears.
+  # PERS_HX_SMOKING is the one exception: it IS genuinely Yes/No.
+  pers_hx_ibd:         [[questionnaire, pers_hx_ibd]]
+  pers_hx_diabetes:    [[questionnaire, pers_hx_diabetes]]
+  pers_hx_obesity:     [[questionnaire, pers_hx_obesity]]
+  pers_hx_htn:         [[questionnaire, pers_hx_htn]]
+  pers_hx_smoking:     [[questionnaire, pers_hx_smoking]]
 
 features:
   shared:
@@ -266,11 +312,7 @@ features:
     - family_hx_crc
     - charlson_index
   socioeconomic:
-    - years_education
-    - marital_status
-    - religion
-    - language_preference
-    - country_of_birth
+    - years_education                 # ordinal 1-4, from Questionnaire.EDUCATION_HIGHEST_GRADE
   crc_specific:
     labs:
       - wbc
@@ -299,11 +341,27 @@ features:
     comorbidities:
       - ibd
       - diabetes
+    self_reported_comorbidities:       # Questionnaire PERS_HX_* (binarized on "You")
+      - pers_hx_ibd
+      - pers_hx_diabetes
+      - pers_hx_obesity
+      - pers_hx_htn
+      - pers_hx_smoking
     medications:
       - aspirin
       - nsaid
+  # Excluded from the model (kept in the dataset for reporting only): CEA is
+  # pre-index leakage/indication bias (J3); the rest have no CRC biology
+  # rationale and/or too little real signal (near-constant, high-cardinality
+  # proxy, or negligible fill) per the real-data feature audit.
   audit_only:
-    - cea                             # J3: pre-index CEA is leakage/indication bias
+    - cea
+    - ethnicity            # 3.9% populated
+    - religion             # no CRC biology rationale
+    - country              # 95% USA -- near-constant
+    - marital_status       # no CRC biology rationale
+    - country_of_birth     # 89 categories, no CRC rationale
+    - language_preference  # 2 categories, proxy for ethnicity
 
 # ---------------------------------------------------------------------
 # Feature maps — how raw values map to feature keys. Column names are known;
@@ -318,17 +376,39 @@ feature_maps:
   vitals_units:                       # HEIGHT|INCHES confirmed; confirm weight unit
     height: in                        # in | cm
     weight: oz                        # oz | lb | kg  (Epic WEIGHT/SCALE is often ounces)
-  lab_analytes:                       # EXACT (case-insensitive) component_name values
-    wbc:            ["WBC", "WHITE BLOOD CELL", "WHITE BLOOD CELLS"]
-    hemoglobin:     ["HGB", "HGB, WB", "HEMOGLOBIN , VEN"]
-    platelet_count: ["PLATELET COUNT", "PLATELETS", "PLATELET"]
-    creatinine:     ["CREATININE", "CREATININE, SERUM", "WB CREATININE, VEN"]
-    alt:            ["ALT", "ALT (SGPT)", "ALT(SGPT)"]
-    ast:            ["AST", "AST (SGOT)"]
-    cea:            ["CEA", "CARCINOEMBRYONIC AG"]
+  # EXACT (case-insensitive) component_name values, PLUS a reference-unit
+  # allowlist per analyte. A row is only aggregated if its `units` value is in
+  # the allowlist -- this catches cross-unit contamination (e.g. a value
+  # recorded in the wrong reference unit under the same component_name) that a
+  # label-only match can't see. Confirmed from real Order_results.txt units.
+  lab_analytes:
+    wbc:
+      labels: ["WBC", "WHITE BLOOD CELL", "WHITE BLOOD CELLS"]
+      units:  ["x10 3/uL", "x10E3/uL", "K/uL", "1000/MM3", "Thous/mcL", "X103/UL"]
+    hemoglobin:
+      labels: ["HEMOGLOBIN", "HGB", "HGB, WB", "HEMOGLOBIN , VEN"]
+      units:  ["G/DL", "g/dL", "g/dl"]
+    platelet_count:
+      labels: ["PLATELET", "PLATELET COUNT", "PLATELETS"]
+      units:  ["x10 3/uL", "x10E3/uL", "K/uL", "Thous/mcL", "X103/UL"]
+    creatinine:
+      labels: ["CREATININE-SERUM", "CREATININE", "CREATININE, SERUM",
+               "WB CREATININE, VEN"]
+      units:  ["MG/DL", "mg/dL", "mg/dl"]
+    alt:
+      labels: ["ALT(SGPT)", "ALT (SGPT)", "ALT"]
+      units:  ["U/L", "IU/L"]
+    ast:
+      labels: ["AST (SGOT)", "AST"]
+      units:  ["U/L", "IU/L"]
+    cea:
+      labels: ["CARCINOEMBRYONIC AG", "CEA"]
+      units:  ["NG/ML", "ng/mL"]
   medications:
     aspirin: ["aspirin"]
-    nsaid:   ["ibuprofen", "naproxen", "nsaid", "celecoxib", "diclofenac"]
+    # "nsaid" itself removed -- it only matched the brand name "PENNSAID",
+    # not actual NSAIDs (confirmed from real medication-name audit).
+    nsaid:   ["ibuprofen", "naproxen", "celecoxib", "diclofenac", "meloxicam"]
   comorbidity_icd:                    # ICD prefixes (either coding system)
     ibd:             ["K50", "K51", "555", "556"]
     diabetes:        ["E10", "E11", "250"]
@@ -343,7 +423,7 @@ feature_maps:
   family_history:
     questionnaire_flag: fam_hx_colon_cancer    # preferred: survey flag
     positive_values: ["yes", "y", "1", "true"]
-    crc_terms: ["colorectal", "colon cancer", "rectal cancer"]   # fallback: family text
+    crc_terms: ["Colon Cancer", "colon cancer"]   # fallback: family text; "colorectal"/"rectal cancer" have 0 rows
 
 thresholds:
   obese_bmi: 30
@@ -352,6 +432,11 @@ thresholds:
   platelet_high: 400        # 10^3/uL
   platelet_low: 150
   creatinine_high: 1.3      # mg/dL
+  # data-entry-error / sentinel-code guards (confirmed from real-data audit)
+  lab_sentinel_values: [9999999]        # literal sentinel found in Order_results values
+  height_valid_in:  [48, 84]            # 4'0"-7'0"; outside -> NaN before BMI is computed
+  weight_valid_lb:  [30, 500]           # ==[480, 8000] oz, the real WEIGHT/SCALE unit
+  bmi_valid:        [10, 70]
 
 model:
   candidates: [logistic_l2, random_forest, xgboost]

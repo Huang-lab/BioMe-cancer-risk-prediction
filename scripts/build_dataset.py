@@ -22,8 +22,10 @@ from pipeline import cli, util  # noqa: E402
 LOG = util.get_logger("build_dataset")
 
 CATEGORICAL = ["sex", "race", "ethnicity", "marital_status", "religion", "country",
-               "smoking_status", "alcohol_use", "country_of_birth", "language_preference",
-               "cohort"]
+               "smoking_status", "country_of_birth", "language_preference", "cohort"]
+# alcohol_use is a clean 0/1 (see features.py ALCOHOL_MAP) -- numeric, not one-hot.
+# years_education is an ordinal 1-4 -- numeric.
+# pers_hx_* are binary 0/1 -- numeric.
 META = ["ehr_id", "sample_id", "group", "is_case", "index_date", "birth_date",
         "ancestry_group", "matched", "matched_set", "propensity"]
 

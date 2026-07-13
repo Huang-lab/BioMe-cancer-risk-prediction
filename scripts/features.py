@@ -20,10 +20,75 @@ from pipeline import cli, codes, data, util  # noqa: E402
 
 LOG = util.get_logger("features")
 
+# --- confirmed real-value collapses (from BioMe raw-value audit) -----------
+# PERS_HX_* (except PERS_HX_SMOKING) store WHO has the condition ("You",
+# "Your Mother", ...); \bYou\b (whole word) means the PATIENT has it -- "Your
+# Mother" alone must NOT match.
+PERS_HX_YOU_COLS = ["pers_hx_ibd", "pers_hx_diabetes", "pers_hx_obesity", "pers_hx_htn"]
+
+SMOKING_MAP = {
+    "never": "never",
+    "never smoker": "never",
+    "never smoker ": "never",
+    "never assessed": "never",
+    "passive smoke exposure - never smoker": "never",
+    "former": "former",
+    "former smoker": "former",
+    "every day": "current",
+    "current every day smoker": "current",
+    "some days": "current",
+    "current some day smoker": "current",
+    "light smoker": "current",
+    "light tobacco smoker": "current",
+    "heavy smoker": "current",
+    "heavy tobacco smoker": "current",
+    "smoker, current status unknown": "unknown",
+    "unknown if ever smoked": "unknown",
+    "unknown": "unknown",
+}
+
+ALCOHOL_MAP = {
+    "yes": 1, "no": 0, "never": 0,
+    "not currently": 0, "not asked": None,
+}
+
+# EDUCATION_HIGHEST_GRADE category -> ordinal grade (1-4); anything not listed
+# (including blank/unmapped) stays NaN rather than guessing a value.
+EDUCATION_ORDINAL_MAP = {
+    "elementary/primary school (includes grades 1 - 5)": 1,
+    "middle school/junior high (includes grades 6 - 8)": 2,
+    "high school/preparatory school": 3,
+    "trade school/vocational school": 3,
+    "university/college": 4,
+    "other": 3,
+}
+
 # pandas < 2.2 forwards an unrecognized `include_groups` kwarg straight into the
 # applied function instead of consuming it at the `.apply()` level (the pinned
 # Minerva env is pandas==2.1.4) -- only pass it where the installed pandas honors it.
 _PD_SUPPORTS_INCLUDE_GROUPS = tuple(int(p) for p in pd.__version__.split(".")[:2]) >= (2, 2)
+
+
+def coalesce_static(index, tables, sources):
+    """Build one static (one-row-per-patient) feature from an ORDERED list of
+    ``[table, column]`` sources. The first source with a non-empty value for a
+    patient wins; later sources only fill patients still missing/blank. This is
+    the fallback that lets an empty column in its expected table (e.g. the real
+    ``Social_History.YEARS_EDUCATION``) defer to another (``Questionnaire``)
+    instead of silently landing in the model as always-NaN.
+    """
+    col = pd.Series(pd.NA, index=index, dtype=object)
+    for table, raw_col in sources:
+        df = tables.get(table)
+        if df is None or raw_col not in df.columns:
+            continue
+        mapped = df.drop_duplicates("ehr_id").set_index("ehr_id")[raw_col].reindex(index)
+        need = col.isna() | (col.astype(str).str.strip() == "")
+        col = col.where(~need, mapped)
+    # a blank string from the LAST source tried is still "no data" -- normalize
+    # to NaN so callers never have to special-case "" vs missing.
+    col = col.where(~(col.astype(str).str.strip() == ""), pd.NA)
+    return col
 
 
 def _windowed(df, win):
@@ -46,10 +111,13 @@ def _slope_per_year(g):
     return float(np.polyfit(x, y, 1)[0])
 
 
-def _long_agg(win_df, name_col, labels):
+def _long_agg(win_df, name_col, labels, sentinel_values=()):
     """From a long table, return (last, mean, slope) numeric-value Series for rows
     whose name_col EXACTLY matches any label (case-insensitive). None if no rows.
-    Coerces value to numeric here (tidy tables keep raw strings so BP survives)."""
+    Coerces value to numeric here (tidy tables keep raw strings so BP survives).
+    `sentinel_values` are literal data-entry-error / placeholder codes (e.g. the
+    real Order_results 9999999 sentinel) dropped before aggregation -- otherwise
+    one sentinel row can blow out last/mean/slope for that patient."""
     if win_df is None or win_df.empty or name_col not in win_df.columns:
         return None
     labels_l = [s.lower() for s in labels]
@@ -57,6 +125,8 @@ def _long_agg(win_df, name_col, labels):
     if sub.empty:
         return None
     sub["value"] = pd.to_numeric(sub["value"], errors="coerce")
+    if sentinel_values:
+        sub = sub[~sub["value"].isin(sentinel_values)]
     sub = sub.dropna(subset=["value"]).sort_values("date")
     if sub.empty:
         return None
@@ -66,13 +136,36 @@ def _long_agg(win_df, name_col, labels):
             sub.groupby("ehr_id").apply(_slope_per_year, **kwargs))
 
 
+def _lab_spec(spec):
+    """Support both the old flat-list config (`['WBC', ...]`) and the newer
+    `{labels: [...], units: [...]}` dict form. `units`, when non-empty, is a
+    reference-unit ALLOWLIST -- rows whose real units value isn't in it are
+    dropped before aggregating (catches cross-unit contamination under the
+    same component_name that a label-only match can't see)."""
+    if isinstance(spec, dict):
+        return spec.get("labels", []), spec.get("units", [])
+    return spec, []
+
+
+def _apply_unit_allowlist(sub_win, unit_allowlist):
+    """Drop rows whose `units` value isn't in the allowlist (case-insensitive).
+    No-op if there's no allowlist configured or no `units` column to check."""
+    if not unit_allowlist or sub_win is None or sub_win.empty or "units" not in sub_win.columns:
+        return sub_win
+    allow_l = {u.strip().lower() for u in unit_allowlist}
+    return sub_win[sub_win["units"].astype(str).str.strip().str.lower().isin(allow_l)]
+
+
 def lab_features(cfg, out, cohort_tables, win, feats):
     amap = cfg["feature_maps"]["lab_analytes"]
+    sentinels = cfg.get("thresholds", {}).get("lab_sentinel_values", [])
     win_lab = _windowed(cohort_tables.get("labs"), win)
-    for key, labels in amap.items():
+    for key, raw_spec in amap.items():
+        labels, unit_allowlist = _lab_spec(raw_spec)
         feats[f"{key}_last"] = np.nan
         feats[f"{key}_mean"] = np.nan
-        agg = _long_agg(win_lab, "analyte", labels)
+        sub_win = _apply_unit_allowlist(win_lab, unit_allowlist)
+        agg = _long_agg(sub_win, "analyte", labels, sentinel_values=sentinels)
         if agg is None:
             continue
         last, mean, slope = agg
@@ -116,10 +209,24 @@ def vitals_features(cfg, cohort_tables, win, feats, th):
     if units.get("height") == "cm":
         ht_in = ht_in / 2.54
     wt_lb = _to_lb(pd.to_numeric(feats["weight_last"], errors="coerce"), units.get("weight"))
+
+    # physiological-range clipping BEFORE computing BMI -- implausible raw
+    # values (data-entry errors, unit mixups) must not propagate into a
+    # garbage BMI. Bounds are unit-normalized (inches/lb) so they apply
+    # regardless of the cohort's configured raw vitals unit.
+    ht_lo, ht_hi = th.get("height_valid_in", [-np.inf, np.inf])
+    wt_lo, wt_hi = th.get("weight_valid_lb", [-np.inf, np.inf])
+    ht_in = ht_in.where(ht_in.between(ht_lo, ht_hi))
+    wt_lb = wt_lb.where(wt_lb.between(wt_lo, wt_hi))
+    feats["height_last"] = ht_in     # now standardized to inches (was raw config unit)
+    feats["weight_last"] = wt_lb     # now standardized to lb (was raw config unit)
+
     with np.errstate(divide="ignore", invalid="ignore"):
         feats["bmi_last"] = 703.0 * wt_lb / (ht_in ** 2)
         feats["bmi_slope"] = 703.0 * pd.to_numeric(feats["weight_loss_velocity"],
                                                    errors="coerce") / (ht_in ** 2)
+    bmi_lo, bmi_hi = th.get("bmi_valid", [-np.inf, np.inf])
+    feats["bmi_last"] = feats["bmi_last"].where(feats["bmi_last"].between(bmi_lo, bmi_hi))
 
     # blood pressure: value like "120/80" -> split; last in window
     bp_labels = [s.lower() for s in vmap.get("bp", [])]
@@ -240,22 +347,67 @@ def build_cohort(cfg, out, cohort, pheno_c, tw, th):
             fh = fam[fam["condition"].astype(str).str.contains(pat, case=False, na=False)]
             feats["family_hx_crc"] = feats.index.isin(fh["ehr_id"]).astype(int)
 
-    # static demographics / social / questionnaire (one row per patient, not windowed)
-    def merge_static(table, cols):
-        df = tables.get(table)
-        if df is None:
-            return
-        avail = [c for c in cols if c in df.columns]
-        if not avail:
-            return
-        d = df.drop_duplicates("ehr_id").set_index("ehr_id")[avail]
-        for c in avail:
-            feats[c] = feats.index.map(d[c])
+    # static (one-row-per-patient) features — config-driven sourcing with
+    # fallback. `static_features` maps each modeling feature to an ORDERED list
+    # of [interim_table, canonical_column] sources; the first source with a
+    # non-empty value for a patient wins. This is why `education` reads
+    # Questionnaire before Social_History: Social_History.YEARS_EDUCATION is
+    # empty in the real BioMe export, so it falls back / forward to
+    # Questionnaire.EDUCATION_HIGHEST_GRADE instead of dying as always-NaN.
+    static_map = cfg.get("static_features")
+    if static_map:
+        for feat_name, sources in static_map.items():
+            feats[feat_name] = coalesce_static(feats.index, tables, sources)
+    else:
+        # legacy hardcoded sourcing (kept so configs without static_features work)
+        def merge_static(table, cols):
+            df = tables.get(table)
+            if df is None:
+                return
+            avail = [c for c in cols if c in df.columns]
+            if not avail:
+                return
+            d = df.drop_duplicates("ehr_id").set_index("ehr_id")[avail]
+            for c in avail:
+                feats[c] = feats.index.map(d[c])
 
-    merge_static("demographics", ["race", "ethnicity", "marital_status", "religion", "country"])
-    merge_static("social", ["smoking", "alcohol", "years_education"])
-    merge_static("questionnaire", ["country_of_birth", "language_preference"])
-    feats.rename(columns={"smoking": "smoking_status", "alcohol": "alcohol_use"}, inplace=True)
+        merge_static("demographics", ["race", "ethnicity", "marital_status", "religion", "country"])
+        merge_static("social", ["smoking", "alcohol", "years_education"])
+        merge_static("questionnaire", ["country_of_birth", "language_preference"])
+        feats.rename(columns={"smoking": "smoking_status", "alcohol": "alcohol_use"}, inplace=True)
+
+    # PERS_HX_* "who has it" columns -> binary "does the PATIENT have it".
+    # PERS_HX_SMOKING is the one column that's genuinely Yes/No already.
+    for col in PERS_HX_YOU_COLS:
+        if col in feats.columns:
+            feats[col] = feats[col].astype(str).str.contains(
+                r"\bYou\b", na=False, regex=True).astype(int)
+    if "pers_hx_smoking" in feats.columns:
+        feats["pers_hx_smoking"] = (feats["pers_hx_smoking"].astype(str).str.strip()
+                                    .str.lower().isin(["yes", "y"]).astype(int))
+
+    # smoking_status: collapse the raw TOBACCO_USER categories (confirmed real
+    # values, incl. a trailing-space variant) into never/former/current/unknown.
+    if "smoking_status" in feats.columns:
+        feats["smoking_status"] = (feats["smoking_status"]
+            .astype(str).str.strip().str.lower()
+            .map(SMOKING_MAP).fillna("unknown"))
+
+    # alcohol_use: collapse IS_ALCOHOL_USER to binary; "not asked" -> NaN (not
+    # a no-response default) rather than guessing.
+    if "alcohol_use" in feats.columns:
+        feats["alcohol_use"] = (feats["alcohol_use"]
+            .astype(str).str.strip().str.lower()
+            .map(ALCOHOL_MAP))
+
+    # years_education: ordinal-encode EDUCATION_HIGHEST_GRADE, then drop the
+    # raw category column -- the ordinal value is the real modeling feature.
+    if "education_grade" in feats.columns:
+        feats["years_education"] = (feats["education_grade"]
+            .astype(str).str.strip().str.lower()
+            .str.split(",").str[0].str.strip()
+            .map(EDUCATION_ORDINAL_MAP))
+        feats.drop(columns=["education_grade"], inplace=True)
 
     feats = feats.reset_index().rename(columns={"index": "ehr_id"})
     return feats, win

@@ -57,8 +57,8 @@ def main():
     out = cli.out_root(cfg)
 
     case_labels = set(cfgmod.resolve(cfg["roster"]["case_labels"]))
-    control_label = cfg["roster"]["control_label"]
-    keep = case_labels | {control_label}
+    control_labels = set(cfgmod.resolve_control_labels(cfg))
+    keep = case_labels | control_labels
 
     all_rows = []
     pc_cols = None

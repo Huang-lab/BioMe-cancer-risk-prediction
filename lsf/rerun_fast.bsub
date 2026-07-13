@@ -1,0 +1,70 @@
+#!/bin/bash
+# =====================================================================
+# LSF submit script — RERUN FROM `features` ONWARD ONLY.
+#   bsub < lsf/rerun_fast.bsub
+#
+# Use this after a config/feature-code-only fix (evidence_sources, lab unit
+# allowlists, feature-source corrections, etc.) that does NOT change which
+# patients are cases/controls or how they're matched. preprocess/phenotype/
+# match outputs on disk are untouched and reused as-is -- this saves the
+# 2-3 hour raw-file reparse.
+#
+# Do NOT use this after a fix that changes the roster/patient set (e.g.
+# adding a new control_labels stratum) -- that requires the full
+# lsf/pipeline.bsub rerun, because preprocess.py pre-filters every raw
+# clinical file to the roster's patient ids BEFORE this stage ever runs;
+# newly-qualifying patients' EHR rows were never extracted in the first
+# place and features-onward has nothing to read for them.
+#
+# Fails fast: `set -e` stops the job at the first stage that errors, so a
+# broken `features` stage never wastes the ~30 min RandomizedSearchCV on
+# garbage data. Ends with sanity_check.py -- read its SUMMARY line in
+# %J.stdout before trusting any downstream numbers or building slides.
+# =====================================================================
+#BSUB -J crc_rerun_fast
+#BSUB -P acc_rg_huangk06            # <-- SET to your allocation account (acc_...)
+#BSUB -q premium
+#BSUB -n 8
+#BSUB -R span[hosts=1]
+#BSUB -R rusage[mem=32000]
+#BSUB -W 3:00
+#BSUB -o %J.stdout
+#BSUB -eo %J.stderr
+#BSUB -L /bin/bash
+
+set -euo pipefail
+
+CONFIG=${CONFIG:-config/crc.yaml}
+COHORT=${COHORT:-cohortI}           # cohort sanity_check.py reports on
+
+module purge
+module load anaconda3
+source activate cancer-risk-biome
+
+# Guard against the sklearn/xgboost user-site conflict (ADDENDUM 4, Bug B):
+# a newer sklearn in ~/.local can override the pinned conda env and break
+# XGBoost's is_classifier() check.
+export PYTHONNOUSERSITE=1
+export OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 MKL_NUM_THREADS=8
+
+cd "$LS_SUBCWD"
+
+echo "=== genomics ==="      && python scripts/genomics.py      --config "$CONFIG" && echo "[OK] genomics"
+echo "=== features ==="      && python scripts/features.py      --config "$CONFIG" && echo "[OK] features"
+echo "=== build_dataset ===" && python scripts/build_dataset.py --config "$CONFIG" && echo "[OK] build_dataset"
+echo "=== train ==="         && python scripts/train.py         --config "$CONFIG" --population both && echo "[OK] train"
+echo "=== evaluate ==="      && python scripts/evaluate.py      --config "$CONFIG" && echo "[OK] evaluate"
+echo "=== external_validate ===" && python scripts/external_validate.py --config "$CONFIG" && echo "[OK] external_validate"
+echo "=== report ==="        && python scripts/report.py        --config "$CONFIG" && echo "[OK] report"
+
+OUTDIR=$(python -c "
+import sys, argparse; sys.path.insert(0, 'scripts')
+from pipeline import cli
+args = argparse.Namespace(config='$CONFIG', data_root=None)
+print(cli.out_root(cli.load(args)))
+")
+
+echo "=== sanity_check ($COHORT, matched) ==="
+python scripts/sanity_check.py --out "$OUTDIR" --cohort "$COHORT" --population matched
+
+echo "ALL DONE. Read the SUMMARY line above before trusting downstream numbers/slides."

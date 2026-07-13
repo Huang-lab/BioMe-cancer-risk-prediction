@@ -72,6 +72,16 @@ def resolve_path(cfg: dict, rel: str) -> str:
     return os.path.join(workdir, rel)
 
 
+def resolve_control_labels(cfg: dict) -> list[str]:
+    """Return the roster group label(s) meaning "control", regardless of
+    whether the config uses the newer `control_labels` (list -- e.g. separate
+    age>=50 / age<50 strata) or the older singular `control_label`."""
+    r = cfg["roster"]
+    if "control_labels" in r:
+        return list(resolve(r["control_labels"]))
+    return [resolve(r["control_label"])]
+
+
 def cohort_names(cfg: dict) -> list[str]:
     return [c["name"] for c in cfg["cohorts"]]
 
