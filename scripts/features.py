@@ -331,14 +331,17 @@ def build_cohort(cfg, out, cohort, pheno_c, tw, th):
 
     # family history of CRC (not temporally windowed — a historical fact).
     # Prefer the questionnaire survey flag; fall back to Family_History free text.
+    # FAM_HX_COLON_CANCER stores WHO has it ("Father", "Mother's Parents", "You",
+    # ...) -- the SAME "who has it" encoding as the PERS_HX_* columns, not a
+    # Yes/No flag. positive_values (yes/y/1/true) never matched the real data,
+    # so this was silently always 0 (confirmed via feature_audit.md).
     feats["family_hx_crc"] = 0
     fhcfg = fm["family_history"]
     quest = tables.get("questionnaire")
     flag_col = fhcfg.get("questionnaire_flag")
     if quest is not None and flag_col and flag_col in quest.columns:
-        pos = [str(v).lower() for v in fhcfg.get("positive_values", ["yes"])]
         q = quest.drop_duplicates("ehr_id")
-        hit = q[q[flag_col].astype(str).str.lower().isin(pos)]
+        hit = q[q[flag_col].astype(str).str.contains(r"\bYou\b", na=False, regex=True)]
         feats["family_hx_crc"] = feats.index.isin(hit["ehr_id"]).astype(int)
     else:
         fam = tables.get("family")

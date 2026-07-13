@@ -57,6 +57,15 @@ def _emit(lines, msg):
     lines.append(msg)
 
 
+def _labels_of(entry):
+    """A feature_maps label-map value is either a flat list (vital_signs) or
+    the newer {labels, units} dict form (lab_analytes) -- extract the label
+    list either way. Without this, iterating a dict value directly yields its
+    KEYS ("labels", "units"), not the analyte names (the exact bug this
+    mirrors in preprocess.py's build_row_filters)."""
+    return entry.get("labels", []) if isinstance(entry, dict) else entry
+
+
 def audit_category_column(lines, df, col, unit_col, label_map, table_name, top_n=20):
     """Long-format table filtered on a name/analyte-like column: real top values,
     configured labels with zero real matches, and (if a unit column exists) the
@@ -69,7 +78,7 @@ def audit_category_column(lines, df, col, unit_col, label_map, table_name, top_n
     for v, c in vals.value_counts().head(top_n).items():
         _emit(lines, f"    {c:>8}  {v}")
 
-    all_labels = {lab.lower() for labs in label_map.values() for lab in labs}
+    all_labels = {lab.lower() for labs in label_map.values() for lab in _labels_of(labs)}
     present = set(vals.str.lower().unique())
     missing = sorted(all_labels - present)
     if missing:
@@ -80,7 +89,7 @@ def audit_category_column(lines, df, col, unit_col, label_map, table_name, top_n
 
     if unit_col and unit_col in df.columns:
         for key, labels in label_map.items():
-            labs_l = [s.lower() for s in labels]
+            labs_l = [s.lower() for s in _labels_of(labels)]
             sub = df[vals.str.lower().isin(labs_l)]
             if sub.empty:
                 continue
@@ -114,7 +123,7 @@ def raw_uncovered_values(lines, cfg, cohort_cfg, table_key, col, label_map, top_
 
     vals = df[col].astype(str).str.strip()
     vc = vals.value_counts()
-    all_labels = {lab.lower() for labs in label_map.values() for lab in labs}
+    all_labels = {lab.lower() for labs in label_map.values() for lab in _labels_of(labs)}
     uncovered = vc[~vc.index.str.lower().isin(all_labels)]
     _emit(lines, f"  RAW {table_key} scan (bypasses the config-guess pre-filter): "
                  f"{len(df)} rows, {len(vc)} distinct '{col}' values")
@@ -201,6 +210,11 @@ def main():
         LOG.info("\n%s\ncohort %s\n%s", "=" * 70, cohort, "=" * 70)
         lines.append(f"\n## cohort {cohort}\n")
         n_subjects = int((pheno["cohort"] == cohort).sum())
+        # interim tables cover every roster case+control BEFORE phenotype.py drops
+        # subjects with no index_date -- restrict rate/count denominators below to
+        # just the subjects that actually survive into the model, or "N/n_subjects"
+        # can exceed 100% (numerator from the larger interim population).
+        pheno_ids = set(pheno.loc[pheno["cohort"] == cohort, "ehr_id"].astype(str))
 
         lines.append("### per-column fill-rate across every configured feature")
         audit_static_columns(lines, out, cohort, cfg)
@@ -221,12 +235,15 @@ def main():
                     for t in ("enc_diagnosis", "problem_list", "medical_hx")]
         dx_tables = [d for d in dx_tables if d is not None and "icd_code" in d.columns]
         dxw = pd.concat(dx_tables, ignore_index=True) if dx_tables else None
+        if dxw is not None:
+            dxw = dxw[dxw["ehr_id"].astype(str).isin(pheno_ids)]
         lines.append("\n### ICD-based flags (comorbidity + symptoms)")
         audit_icd(lines, dxw, {**fm["comorbidity_icd"], **fm["symptom_icd"]}, n_subjects)
 
         lines.append("\n### medications")
         meds = data.load_tidy(out, cohort, "meds")
         if meds is not None and "name" in meds.columns:
+            meds = meds[meds["ehr_id"].astype(str).isin(pheno_ids)]
             _emit(lines, "  top 15 real medication name values:")
             for v, c in meds["name"].astype(str).value_counts().head(15).items():
                 _emit(lines, f"    {c:>8}  {v}")
@@ -245,10 +262,12 @@ def main():
         if quest is not None and flag_col in quest.columns:
             vc = quest[flag_col].astype(str).str.lower().value_counts()
             _emit(lines, f"  '{flag_col}' real value counts: {vc.to_dict()}")
-            configured = {v.lower() for v in fhcfg.get("positive_values", [])}
-            if not (configured & set(vc.index)):
-                _emit(lines, "  ! none of the configured positive_values appear in the real data "
-                             "-- family_hx_crc is likely always 0")
+            you_hits = quest[flag_col].astype(str).str.contains(r"\bYou\b", na=False, regex=True).sum()
+            if you_hits == 0:
+                _emit(lines, "  ! no real value contains whole-word 'You' -- "
+                             "family_hx_crc would be always 0")
+            else:
+                _emit(lines, f"  {you_hits} rows contain whole-word 'You' -> family_hx_crc=1")
         else:
             _emit(lines, f"  ('{flag_col}' not in questionnaire; falls back to "
                          f"Family_History free text matching on {fhcfg.get('crc_terms')})")

@@ -197,7 +197,16 @@ def gen_clinical(cfg, patients, ehr_dir, rng, cohort_spec):
     # PERS_HX_* (except PERS_HX_SMOKING) store WHO has the condition, not Yes/No
     # -- "You" (patient), "Your Mother"/etc. (relative, NOT the patient), or "No".
     t = "questionnaire"
-    fam_flag = np.where(patients["is_case"] & (rng.random(len(patients)) < 0.35), "Yes", "No")
+    # FAM_HX_COLON_CANCER is ALSO a "who has it" relation column (confirmed real
+    # values: Father/Mother's Parents/Mother/Siblings/You/...), not Yes/No --
+    # same encoding as PERS_HX_*. Cases get a higher relative-history rate.
+    fam_hx_options = ["No history", "Father", "Mother", "Mother's Parents",
+                      "Father's Parents", "Siblings", "You"]
+    fam_flag = np.array([
+        rng.choice(fam_hx_options[1:], p=[0.28, 0.28, 0.18, 0.13, 0.09, 0.04])
+        if (is_case and rng.random() < 0.35) else "No history"
+        for is_case in patients["is_case"]
+    ])
     who_options = ["No", "You", "Your Mother", "Your Father", "You, Your Mother"]
     who_p = [0.55, 0.20, 0.10, 0.10, 0.05]
 

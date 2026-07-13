@@ -421,8 +421,9 @@ feature_maps:
   procedures:
     prior_polypectomy: ["polypectomy"]        # surgical_hx procedure text contains
   family_history:
+    # FAM_HX_COLON_CANCER stores WHO has it ("Father", "You", ...), matched on
+    # whole-word "You" (see features.py) -- NOT a positive_values Yes/No lookup.
     questionnaire_flag: fam_hx_colon_cancer    # preferred: survey flag
-    positive_values: ["yes", "y", "1", "true"]
     crc_terms: ["Colon Cancer", "colon cancer"]   # fallback: family text; "colorectal"/"rectal cancer" have 0 rows
 
 thresholds:
