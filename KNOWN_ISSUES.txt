@@ -1,0 +1,164 @@
+KNOWN ISSUES / PENDING FIXES — CRC risk model
+Last updated: 2026-07-13, after the "finish_now.bsub" run whose report.md/PNGs
+were used for the presentation. Read this before trusting or extending that
+run's results, and before the next full pipeline rerun.
+
+===============================================================================
+1. family_hx_crc FIX IS IN THE CODE BUT NOT IN THE CURRENT report.md/model
+===============================================================================
+Status: FIXED IN CODE (commit 677b220), NOT YET RE-RUN.
+
+Root cause (confirmed from feature_audit.md against real Minerva data):
+Questionnaire.FAM_HX_COLON_CANCER stores WHO has the family history
+("Father", "Mother's Parents", "You", "Siblings", ...) -- the SAME "who has
+it" relation encoding as the PERS_HX_* columns, NOT a Yes/No flag. The old
+config matched against positive_values ["yes","y","1","true"], which never
+appeared in the real data -- so family_hx_crc was silently ALWAYS 0 in every
+run to date, including the one whose report.md/PNGs went into the
+presentation.
+
+Fix applied: features.py now matches whole-word "You" (regex \bYou\b) on
+FAM_HX_COLON_CANCER, exactly like PERS_HX_IBD/DIABETES/OBESITY/HTN.
+
+TO PICK THIS UP: rerun features.py -> build_dataset.py -> train.py ->
+evaluate.py -> external_validate.py -> report.py (the lsf/rerun_fast.bsub
+path is fine -- this fix doesn't touch preprocess/phenotype/match).
+Family history of CRC is a clinically meaningful risk factor; expect it to
+show up with real (small but nonzero) importance once this reruns, and the
+carrier-enrichment / SHAP story to shift slightly.
+
+===============================================================================
+2. prior_polypectomy — likely dead, root cause NOT confirmed
+===============================================================================
+Status: OPEN, not yet fixed. Flagged as a caveat in the presentation, not
+silently claimed as a working feature.
+
+sanity_check.py flags prior_polypectomy as dead (entirely 0) in both the
+matched and full populations. feature_audit.md's top Surgical_History
+procedure values for cohortI (top 8 of 761,960 rows) show colonoscopy-related
+entries ('AMB REF TO COLONOSCOPY,DIAGNOSTIC', 'COLONOSCOPY', etc.) but no
+visible 'polypectomy' substring match in that top-8 slice.
+
+feature_maps.procedures.prior_polypectomy is currently: ["polypectomy"]
+(case-insensitive substring match on Surgical_History.procedure_name).
+
+TO INVESTIGATE (no retrain needed, just reads existing interim data):
+  python3 -c "
+  import pandas as pd
+  df = pd.read_csv('<CRC outdir>/interim/cohortI/surgical_hx.csv')
+  hits = df[df['procedure'].str.contains('polyp', case=False, na=False)]
+  print(hits['procedure'].value_counts())
+  "
+If real polypectomy procedure strings exist but don't contain literal
+"polypectomy" (e.g. CPT-coded text, "POLYP REMOVAL", "SNARE EXCISION"), widen
+the pattern list in feature_maps.procedures.prior_polypectomy accordingly.
+
+===============================================================================
+3. pers_hx_smoking — dead ONLY because preprocess hasn't been re-run
+===============================================================================
+Status: EXPECTED, not a new bug. Will self-resolve on the next full
+preprocess rerun (no code change needed).
+
+PERS_HX_SMOKING was added to ehr_tables.questionnaire.cols this session, but
+preprocess.py (which extracts raw columns into interim/questionnaire.csv)
+was NOT re-run after that config change (rerun_fast.bsub / finish_now.bsub
+both skip preprocess deliberately to save time). The interim table on disk
+still lacks this column, so the feature is always 0.
+
+TO PICK THIS UP: needs a full preprocess rerun (see item 5 below -- bundle it
+with the other preprocess-dependent items in one rerun rather than one now).
+
+===============================================================================
+4. Age<50 control stratum (roster.control_labels) NOT YET REFLECTED
+===============================================================================
+Status: config changed, pipeline NOT yet re-run with it.
+
+roster.control_labels was expanded to ["Control (age≥50)", "Control (age<50)"]
+(previously only the age≥50 stratum was treated as a control). This requires
+preprocess.py + phenotype.py + match.py to re-run, because preprocess
+pre-filters every raw clinical file down to the roster's case+control patient
+ids BEFORE any other stage runs -- the newly-qualifying age<50 controls' EHR
+rows were never extracted from the raw files in the first place.
+
+The CURRENT report.md/model reflect the ORIGINAL age≥50-only control
+population -- this is not wrong/corrupted, just not yet expanded.
+
+TO PICK THIS UP: needs `bsub < lsf/pipeline.bsub` (the FULL pipeline, not the
+fast features-onward path).
+
+===============================================================================
+5. Two lab-analyte label variants may be incomplete until preprocess re-runs
+===============================================================================
+Status: low priority, bounded impact.
+
+feature_maps.lab_analytes gained two new label variants this session: bare
+"HEMOGLOBIN" (hemoglobin) and "CREATININE-SERUM" (creatinine). If those exact
+component_name strings exist in the real Order_results.txt, they were NOT
+captured by the last preprocess run (which pre-filtered rows to the OLD label
+list at extraction time) -- interim/labs.csv simply doesn't have those rows
+yet. Confirmed from feature_audit.md: only 18 distinct analyte values exist
+in the current interim/cohortI/labs.csv, none of them "HEMOGLOBIN" (bare) or
+"CREATININE-SERUM".
+
+Impact is bounded: hemoglobin/creatinine already have several other working
+label variants (HGB, CREATININE, WB CREATININE VEN, etc.) with confirmed
+real matches, so this is at most a small completeness gap, not a broken
+feature.
+
+TO PICK THIS UP: bundle with item 4's full preprocess rerun. Optionally run
+`python scripts/audit_feature_maps.py --config config/crc.yaml --raw` first
+to confirm whether those two variants actually exist in the raw file before
+spending the rerun.
+
+===============================================================================
+6. Carrier gene zero-counts under ClinVar-only calling — believed REAL, not a bug
+===============================================================================
+Status: investigated, likely a genuine finding, not a bug. Documented as a
+caveat/finding for the presentation, not silently hidden.
+
+After switching carrier-calling to ClinVar-only (evidence_sources: [clinvar]),
+9 of 14 CRC panel genes show ZERO carriers in dataset_full.csv (all 12,451
+subjects, not just the matched subset -- ruled out matching-induced sparsity):
+MLH1_any, MSH2_any, EPCAM_any, SMAD4_any, STK11_any, PTEN_any, POLE_any,
+POLD1_any, NTHL1_any. Only MUTYH_any (85), lynch_any (10 combined across
+MLH1/MSH2/MSH6/PMS2/EPCAM), MSH6_any (4), PMS2_any (6), APC_any (2), and
+BMPR1A_any (1) have any carriers. Total panel carriers: 98/12,451 (0.79%).
+
+This is plausible: ClinVar-only is a much stricter filter than ClinVar+
+AlphaMissense (the previous setting), and several of these genes are rarer /
+less completely classified in ClinVar. NOT independently re-verified against
+raw gene-name spelling in the carrier file (e.g. a silent gene-name mismatch
+like "MLH1" vs "MLH-1" would also produce exactly this pattern). If this
+looks wrong to a genetics reviewer, the fastest check is:
+  python3 -c "
+  import pandas as pd
+  # read the RAW all_carriers.tsv directly, not carriers_wide.csv, and check
+  # whether 'MLH1' etc. literally appear as a `gene` value at all
+  df = pd.read_csv('<carrier_flags path from config>', sep='\t')
+  print(df['gene'].value_counts())
+  "
+
+===============================================================================
+WHAT THE CURRENT report.md / PNGs (used for the presentation) DO REFLECT
+===============================================================================
+Correctly applied and verified in that run:
+  - ClinVar-only carrier calling (item 6 caveat aside)
+  - Lab sentinel value (9999999) filtering
+  - Lab reference-unit allowlist (cross-unit contamination guard)
+  - Vitals physiological-range clipping (height/weight/BMI) before BMI calc
+  - PERS_HX_IBD/DIABETES/OBESITY/HTN "who has it" -> binary "You" encoding
+  - smoking_status / alcohol_use collapsed to real confirmed categories
+  - years_education ordinal-encoded from Questionnaire.EDUCATION_HIGHEST_GRADE
+  - Medication/colonoscopy-topic/family-history-term lists trimmed to strings
+    that actually appear in the real data
+  - A defensive fix so a stale model_full.pkl can't crash evaluate.py
+
+===============================================================================
+RECOMMENDED NEXT STEP
+===============================================================================
+Run the FULL pipeline once (`bsub < lsf/pipeline.bsub`), not the fast path --
+it picks up items 1, 3, 4, and 5 all at once (item 2 needs its own
+investigation first per above; item 6 is a review/verification task, not a
+rerun). Re-run `scripts/sanity_check.py` and `scripts/audit_feature_maps.py`
+afterward and confirm family_hx_crc, pers_hx_smoking are no longer flagged
+dead before regenerating slides from the new report.md.
