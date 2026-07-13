@@ -217,10 +217,22 @@ def main():
     # Kept alongside the matched model because matching balances confounders, not
     # prevalence -- the full model is the honest read on real-population calibration.
     full_meta_path = os.path.join(out, "model_metadata_full.json")
+    report_full = None
     if os.path.exists(full_meta_path):
-        report_full = evaluate_population(cfg, out, spec, "full", enr_df, seed, ev, tag="_full")
-    else:
-        report_full = None
+        try:
+            report_full = evaluate_population(cfg, out, spec, "full", enr_df, seed, ev, tag="_full")
+        except Exception:
+            # A stale model_full.pkl from a run BEFORE a feature_cols change (e.g. a
+            # column moved to audit_only) no longer matches dataset_full.csv's
+            # columns -- don't let a leftover comparison artifact crash the whole
+            # evaluate stage when the PRIMARY (matched) result above already
+            # succeeded. Delete model_full.pkl/model_metadata_full.json and rerun
+            # train.py --population both to regenerate a fresh comparison model.
+            LOG.exception("full-population comparison model is stale/incompatible "
+                          "with the current feature set -- skipping it. Primary "
+                          "(matched) results above are unaffected. Rerun "
+                          "`train.py --population both` to refresh model_full.pkl.")
+    if report_full is None and not os.path.exists(full_meta_path):
         LOG.info("no model_full.pkl found; skipping full-cohort comparison "
                  "(run train.py --population both to enable it)")
 
